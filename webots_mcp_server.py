@@ -16,7 +16,12 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any
 import logging
 
-from mcp.server.fastmcp import FastMCP
+# Changed from upstream: `from mcp.server.fastmcp import FastMCP`.
+# That module was removed in mcp 2.x (FastMCP was renamed to MCPServer), so the
+# original import raises ModuleNotFoundError on any current install. The
+# standalone `fastmcp` package still exports the same FastMCP class with the
+# same .tool() decorator and .run() entry point.
+from fastmcp import FastMCP
 
 # Configure logging
 logging.basicConfig(
