@@ -2,3 +2,12 @@
 /data/
 /mcp_server.log
 /.venv/
+
+# --- project additions ---
+.env
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+/scratch/
