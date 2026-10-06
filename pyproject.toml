@@ -6,8 +6,19 @@ build-backend = "setuptools.build_meta"
 name = "llmbot"
 version = "0.1.0"
 description = "LLM agent controlling a NAO robot in Webots through MCP"
-requires-python = ">=3.10"
-dependencies = ["pydantic-ai", "mcp", "python-dotenv"]
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic-ai",
+    "pydantic",
+    "mcp",
+    "fastmcp",
+    "google-genai",
+    "httpx",
+    "python-dotenv",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio", "ruff", "jupyterlab", "pandas", "matplotlib"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
