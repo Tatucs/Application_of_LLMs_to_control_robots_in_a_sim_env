@@ -1,0 +1,32 @@
+#VRML_SIM R2025a utf8
+
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/backgrounds/protos/TexturedBackground.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/backgrounds/protos/TexturedBackgroundLight.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/floors/protos/RectangleArena.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/robots/franka_emika/panda/protos/Panda.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/solids/protos/SolidBox.proto"
+
+WorldInfo {
+}
+Viewpoint {
+  orientation -0.2074843362504918 -0.13711804704803365 0.9685808646594387 4.28036902337318
+  position 1.7487212768210463 3.170881301141748 1.816634816304102
+}
+TexturedBackground {
+}
+TexturedBackgroundLight {
+}
+RectangleArena {
+  floorSize 5 5
+}
+Panda {
+  controller "panda_control_test_1"
+  supervisor TRUE
+}
+DEF CUBE SolidBox {
+  translation 0.5 0 0.02
+  size 0.04 0.04 0.04
+  physics Physics {
+    mass 0.5
+  }
+}
