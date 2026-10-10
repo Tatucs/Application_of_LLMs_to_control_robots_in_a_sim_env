@@ -12,3 +12,6 @@ __pycache__/
 .ruff_cache/
 .ipynb_checkpoints/
 /scratch/
+
+# --- webots controller additions ---
+runtime.ini
