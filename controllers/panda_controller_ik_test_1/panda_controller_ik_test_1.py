@@ -130,16 +130,26 @@ print("The orientation of the end effector is: \n", T_hand[:3, :3])
 # Directing the robot to a target with correct orientation
 target_pos = np.array([0.5, 0.5, 0.5])
 target_ori = np.array([0, 0, -1])
+
+# Full orientation control
+rot_z = 1.0 # rotation around z axis
+z = np.array([0, 0, -1])
+x = np.array([np.cos(rot_z), np.sin(rot_z), 0])
+y = np.cross(z, x)
+R_target = np.column_stack((x, y, z))
+
 q_ik_initial = np.concatenate(([0, 0], [s.getValue() for s in sensors] - P_INIT, [0]))
 ik = chain.inverse_kinematics(target_pos,
-                              orientation_mode="Z",
-                              target_orientation=target_ori,
+                              orientation_mode="all",
+                              target_orientation=R_target,
                               initial_position=q_ik_initial)
-target = chain.forward_kinematics(ik)
-pos_error = np.linalg.norm(target[:3, 3] - target_pos)
-ang_error = np.degrees(np.arccos(np.clip(target[:3, 2] @ target_ori, -1.0, 1.0)))
+T_ik = chain.forward_kinematics(ik)
+pos_error = np.linalg.norm(T_ik[:3, 3] - target_pos)
+# ang_error = np.degrees(np.arccos(np.clip(T_ik[:3, 2] @ target_ori, -1.0, 1.0)))
+R_err = R_target.T @ T_ik[:3, :3]          # identity if they match exactly
+ang_error = np.degrees(np.arccos(np.clip((np.trace(R_err) - 1) / 2, -1, 1)))
 print(f"The target position is: {target_pos}")
-print(f"The target orientation is: {target_ori}")
+print(f"The target orientation is: {R_target}")
 print(f"The inverse kinematics result is: {ik}")
 print(f"The position error is: {pos_error}")
 print(f"The angular error is: {ang_error}")
@@ -156,7 +166,9 @@ for _ in range(steps):
 
 # Print the results
 R = np.array(robot.getFromDef('GRIPPER').getOrientation()).reshape(3, 3)
-print(f"The orientation of the end effector is:", R[:, 2])
+print(f"The orientation of the end effector is:", R)
+print(np.allclose(R, R_target, atol=0.02))
+print(robot.getFromDef('GRIPPER').getPosition(), "vs", target_pos)
 
 while robot.step(timestep) != -1:
     pass
