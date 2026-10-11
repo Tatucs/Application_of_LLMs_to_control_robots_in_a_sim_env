@@ -10,7 +10,7 @@ WorldInfo {
 }
 Viewpoint {
   orientation -0.2074843362504918 -0.13711804704803365 0.9685808646594387 4.28036902337318
-  position 1.7487212768210463 3.170881301141748 1.816634816304102
+  position 1.760098625344451 3.197579716863221 1.8296664317238311
 }
 TexturedBackground {
 }
@@ -20,13 +20,51 @@ RectangleArena {
   floorSize 5 5
 }
 Panda {
-  controller "panda_control_test_1"
+  controller "panda_control_test_2"
   supervisor TRUE
 }
 DEF CUBE SolidBox {
-  translation 0.5 0 0.02
+  translation 0.5 4.3910300743271e-18 0.019803993074903006
+  rotation 0.945494229097269 0.3151647430324257 -0.08192586583653681 1.6908840966556069e-16
   size 0.04 0.04 0.04
   physics Physics {
+    density -1
     mass 0.5
   }
+}
+DEF TARGET Solid {
+  translation 0.59 0 0.28
+  children [
+    Shape {
+      appearance PBRAppearance {
+        baseColorMap ImageTexture {
+          url [
+            "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/robots/abb/irb/worlds/textures/target.png"
+          ]
+        }
+        roughnessMap ImageTexture {
+          url [
+            "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/robots/abb/irb/worlds/textures/target.png"
+          ]
+        }
+        metalnessMap ImageTexture {
+          url [
+            "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/robots/abb/irb/worlds/textures/target.png"
+          ]
+        }
+        emissiveColorMap ImageTexture {
+          url [
+            "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/robots/abb/irb/worlds/textures/target.png"
+          ]
+        }
+        textureTransform TextureTransform {
+          scale 2 1
+        }
+      }
+      geometry Sphere {
+        radius 0.06
+        subdivision 2
+      }
+    }
+  ]
 }
