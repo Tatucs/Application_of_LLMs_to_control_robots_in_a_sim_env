@@ -82,6 +82,41 @@ print(f"The position of the end effector from Webots is: {robot.getFromDef('GRIP
 print(f"The orientation of the end effector is: \n {mx_forward[:3, :3]}")
 print(f"The orientation of the end effector from Webots is: \n {robot.getFromDef('GRIPPER').getOrientation()}")
 
+# --- Inverse Kinematics ---
+
+# Determining target position with forward kinematics
+q_webots_ik = np.array([0, 0.5, 0, -1.5, 0, 3, 1]) # totally random
+q_ik_concat = np.concatenate(([0, 0], q_webots_ik - P_INIT, [0]))
+mx_forward_ik = chain.forward_kinematics(q_ik_concat)
+target_ik = mx_forward_ik[:3,3]
+
+# Calculate inverse kinematics for the target position from the initial joint angles
+q_ik_initial = np.concatenate(([0, 0], [s.getValue() for s in sensors] - P_INIT, [0]))
+ik_result = chain.inverse_kinematics(target_ik, initial_position=q_ik_initial)
+
+# Compare the result with the target position
+error = np.linalg.norm(chain.forward_kinematics(ik_result)[:3, 3] - target_ik)
+q_cmd = ik_result[2:9] + P_INIT
+
+
+# Set motor positions to the inverse kinematics result
+for motor_name, angle in zip(motor_names, q_cmd):
+    motor = robot.getDevice(motor_name)
+    motor.setPosition(angle)
+    print(f"Set motor {motor_name} to position {angle}")
+
+# Wait for the robot to reach the target positions
+steps = int(4000 / timestep)   # 4000 ms of simulated time
+for _ in range(steps):
+    robot.step(timestep)
+
+# Print the results
+print(f"The target position for inverse kinematics is: {target_ik}")
+print(f"The inverse kinematics result is: {ik_result}")
+print(f"The error between the target position and the result is: {error}")
+print(f"The position of the end effector from Webots is: {robot.getFromDef('GRIPPER').getPosition()}")
+
+
 while robot.step(timestep) != -1:
     pass
 
