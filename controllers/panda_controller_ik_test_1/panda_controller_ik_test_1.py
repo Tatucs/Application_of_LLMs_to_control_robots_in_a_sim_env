@@ -40,7 +40,7 @@ for name, bounds in zip(motor_names, joint_bounds):
 
 P_INIT = np.array([0, 0, 0, -1.7708, -1.6, 1.6, 0.79])   # from Panda.proto
 q_webots = np.array([0, 0, 0, -1.5, 0, 3, 0])            # The desired joint angles
-q = np.concatenate(([0, 0], q_webots - P_INIT, [0]))     # concatanate
+q = np.concatenate(([0, 0], q_webots - P_INIT, [0]))     # concatenate
 
 # The URDF joint limits are still in Webots coordinates, shift them into URDF coordinates too
 for link, p in zip(chain.links[2:9], P_INIT):
@@ -116,6 +116,47 @@ print(f"The inverse kinematics result is: {ik_result}")
 print(f"The error between the target position and the result is: {error}")
 print(f"The position of the end effector from Webots is: {robot.getFromDef('GRIPPER').getPosition()}")
 
+# ----------------------------
+# Checking finger orientations
+q_full = np.concatenate((q, [0])) # adding a 0 for the finger joint
+T_hand = chain.forward_kinematics(q)
+T_finger = full_chain.forward_kinematics(q_full)
+vec = T_finger[:3, 3] - T_hand[:3, 3] # vector from hand to finger
+print(np.linalg.norm(vec))
+print(vec / np.linalg.norm(vec)) # matches the z axis
+print("The orientation of the end effector is: \n", T_hand[:3, :3])
+
+# ----------------------------
+# Directing the robot to a target with correct orientation
+target_pos = np.array([0.5, 0.5, 0.5])
+target_ori = np.array([0, 0, -1])
+q_ik_initial = np.concatenate(([0, 0], [s.getValue() for s in sensors] - P_INIT, [0]))
+ik = chain.inverse_kinematics(target_pos,
+                              orientation_mode="Z",
+                              target_orientation=target_ori,
+                              initial_position=q_ik_initial)
+target = chain.forward_kinematics(ik)
+pos_error = np.linalg.norm(target[:3, 3] - target_pos)
+ang_error = np.degrees(np.arccos(np.clip(target[:3, 2] @ target_ori, -1.0, 1.0)))
+print(f"The target position is: {target_pos}")
+print(f"The target orientation is: {target_ori}")
+print(f"The inverse kinematics result is: {ik}")
+print(f"The position error is: {pos_error}")
+print(f"The angular error is: {ang_error}")
+
+# Set motor positions to the inverse kinematics result
+for motor_name, angle in zip(motor_names, ik[2:9] + P_INIT):
+    motor = robot.getDevice(motor_name)
+    motor.setPosition(angle)
+
+# Wait for the robot to reach the target positions
+steps = int(4000 / timestep)   # 4000 ms of simulated time
+for _ in range(steps):
+    robot.step(timestep)
+
+# Print the results
+R = np.array(robot.getFromDef('GRIPPER').getOrientation()).reshape(3, 3)
+print(f"The orientation of the end effector is:", R[:, 2])
 
 while robot.step(timestep) != -1:
     pass
