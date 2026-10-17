@@ -98,6 +98,12 @@ def world_to_base(p_world, R_world):
     R_in_base = R_base.T @ R_world
     return p_base, R_in_base
 
+def base_to_world(p_base):
+    """Inverse of world_to_base for a position: base frame -> world frame."""
+    t_base = np.array(robot.getSelf().getPosition())
+    R_base = np.array(robot.getSelf().getOrientation()).reshape(3, 3)
+    return R_base @ p_base + t_base
+
 def pose_error(ik, p_target, R_target):
     """FK of an ikpy vector vs a target pose (base frame).
     Returns (position error in metres, orientation error in radians)."""
@@ -133,9 +139,9 @@ def move_to(target_world, yaw=0.0):
     # Verify the IK solution with FK before moving (ikpy never reports failure itself)
     pos_err, ang_err = pose_error(ik, target_base, R_target_base)
     if pos_err > POS_TOL or ang_err > ANG_TOL:
-        return {"reached": False,
+        return {"ok": False,
                 "reason": "unreachable",
-                "target": target.tolist(),
+                "target": np.round(target, 4).tolist(),
                 "ik_pos_err_mm": round(float(pos_err) * 1000, 2),
                 "ik_ang_err_deg": round(float(np.rad2deg(ang_err)), 2)}
 
@@ -143,9 +149,17 @@ def move_to(target_world, yaw=0.0):
     set_joints(ik)
     reached = wait_until_reached(ik)
 
-    return {"reached": reached,
+    # Measure where the TCP actually is: FK of the joint sensors (encoders), not the Supervisor
+    q = read_q()
+    tcp_world = base_to_world(chain.forward_kinematics(q)[:3, 3])
+    pos_err, ang_err = pose_error(q, target_base, R_target_base)
+
+    return {"ok": reached,
             "reason": "ok" if reached else "timeout",
-            "target": target.tolist()}
+            "target": np.round(target, 4).tolist(),
+            "reached": np.round(tcp_world, 4).tolist(),
+            "pos_err_mm": round(float(pos_err) * 1000, 2),
+            "ang_err_deg": round(float(np.rad2deg(ang_err)), 2)}
 
 # ---------------------------------------------------------------- Demo
 
