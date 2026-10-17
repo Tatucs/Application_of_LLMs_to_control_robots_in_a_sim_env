@@ -86,6 +86,16 @@ def set_joints(ik):
     for motor, angle in zip(motors, ik[2:9] + P_INIT):
         motor.setPosition(angle)
 
+def world_to_base(p_world, R_world):
+    """Transform a world-frame position and orientation into the robot base frame
+    (the frame the ikpy chain works in). Base pose is read each call, so it
+    stays correct if the robot is moved."""
+    t_base = np.array(robot.getSelf().getPosition())
+    R_base = np.array(robot.getSelf().getOrientation()).reshape(3, 3)
+    p_base = R_base.T @ (np.array(p_world) - t_base)
+    R_in_base = R_base.T @ R_world
+    return p_base, R_in_base
+
 # ---------------------------------------------------------------- move_to
 
 def move_to(target_world, yaw=0.0):
@@ -94,16 +104,19 @@ def move_to(target_world, yaw=0.0):
     Returns a result dict."""
     target = np.array(target_world)
 
-    # Gripper pointing down, rotated by yaw around the z axis
+    # Gripper pointing down, rotated by yaw around the world z axis
     z = np.array([0, 0, -1])
     x = np.array([np.cos(yaw), np.sin(yaw), 0])
     y = np.cross(z, x)
     R_target = np.column_stack((x, y, z))
 
+    # World -> base frame (both the position and the orientation)
+    target_base, R_target_base = world_to_base(target, R_target)
+
     # Solve IK, seeded from the current pose
-    ik = chain.inverse_kinematics(target,
+    ik = chain.inverse_kinematics(target_base,
                                   orientation_mode="all",
-                                  target_orientation=R_target,
+                                  target_orientation=R_target_base,
                                   initial_position=read_q())
 
     # Send and wait
@@ -122,6 +135,7 @@ cube = np.array(robot.getFromDef('CUBE').getPosition())
 gripper(0.04)
 
 # Move to the cube
+print(move_to(cube + np.array([0, 0, 0.1])))
 print(move_to(cube))
 
 # Close the gripper
