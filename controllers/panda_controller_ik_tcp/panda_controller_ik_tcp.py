@@ -10,6 +10,8 @@ from ikpy.link import URDFLink
 P_INIT = np.array([0, 0, 0, -1.7708, -1.6, 1.6, 0.79])   # from Panda.proto
 TCP_OFFSET = 0.1034          # The offset of the TCP from the last link along the approach axis
 ACTIVE_LINKS_MASK = [False, False] + [True] * 7 + [False, False] # 2 base + 7 active joints + gripper + tcp
+POS_TOL = 1e-3              # max accepted IK position error, in metres
+ANG_TOL = np.deg2rad(1.0)   # max accepted IK orientation error, in radians
 
 # ---------------------------------------------------------------- Setup
 
@@ -96,6 +98,15 @@ def world_to_base(p_world, R_world):
     R_in_base = R_base.T @ R_world
     return p_base, R_in_base
 
+def pose_error(ik, p_target, R_target):
+    """FK of an ikpy vector vs a target pose (base frame).
+    Returns (position error in metres, orientation error in radians)."""
+    T = chain.forward_kinematics(ik)
+    pos_err = np.linalg.norm(T[:3, 3] - p_target)
+    R_err = T[:3, :3].T @ R_target               # rotation still missing from the solution
+    ang_err = np.arccos(np.clip((np.trace(R_err) - 1) / 2, -1.0, 1.0))
+    return pos_err, ang_err
+
 # ---------------------------------------------------------------- move_to
 
 def move_to(target_world, yaw=0.0):
@@ -118,6 +129,15 @@ def move_to(target_world, yaw=0.0):
                                   orientation_mode="all",
                                   target_orientation=R_target_base,
                                   initial_position=read_q())
+
+    # Verify the IK solution with FK before moving (ikpy never reports failure itself)
+    pos_err, ang_err = pose_error(ik, target_base, R_target_base)
+    if pos_err > POS_TOL or ang_err > ANG_TOL:
+        return {"reached": False,
+                "reason": "unreachable",
+                "target": target.tolist(),
+                "ik_pos_err_mm": round(float(pos_err) * 1000, 2),
+                "ik_ang_err_deg": round(float(np.rad2deg(ang_err)), 2)}
 
     # Send and wait
     set_joints(ik)
