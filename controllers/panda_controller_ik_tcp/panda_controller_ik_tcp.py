@@ -86,40 +86,50 @@ def set_joints(ik):
     for motor, angle in zip(motors, ik[2:9] + P_INIT):
         motor.setPosition(angle)
 
+# ---------------------------------------------------------------- move_to
+
+def move_to(target_world, yaw=0.0):
+    """Move the TCP to target_world (x, y, z in metres, world frame),
+    gripper pointing down, rotated by yaw (rad) about the world z axis.
+    Returns a result dict."""
+    target = np.array(target_world)
+
+    # Gripper pointing down, rotated by yaw around the z axis
+    z = np.array([0, 0, -1])
+    x = np.array([np.cos(yaw), np.sin(yaw), 0])
+    y = np.cross(z, x)
+    R_target = np.column_stack((x, y, z))
+
+    # Solve IK, seeded from the current pose
+    ik = chain.inverse_kinematics(target,
+                                  orientation_mode="all",
+                                  target_orientation=R_target,
+                                  initial_position=read_q())
+
+    # Send and wait
+    set_joints(ik)
+    reached = wait_until_reached(ik)
+
+    return {"reached": reached,
+            "reason": "ok" if reached else "timeout",
+            "target": target.tolist()}
+
 # ---------------------------------------------------------------- Demo
 
-# Define the target position and orientation for the end effector
-target = robot.getFromDef('CUBE').getPosition()
-yaw = 0.0   # rotation around z axis
-z = np.array([0, 0, -1])
-x = np.array([np.cos(yaw), np.sin(yaw), 0])
-y = np.cross(z, x)
-R_target = np.column_stack((x, y, z))
-
-ik = chain.inverse_kinematics(target,
-                              orientation_mode="all",
-                              target_orientation=R_target,
-                              initial_position=read_q())
+cube = np.array(robot.getFromDef('CUBE').getPosition())
 
 # Open the gripper
 gripper(0.04)
 
-# Set motor positions to the inverse kinematics result
-set_joints(ik)
-wait_until_reached(ik)
+# Move to the cube
+print(move_to(cube))
 
 # Close the gripper
 gripper(0.0)
 
 # Move the robot up by 0.5 meters
-target = target + np.array([0, 0, 0.5])   # move up
-q_now = ik
-ik = chain.inverse_kinematics(target,
-                              orientation_mode="all",
-                              target_orientation=R_target,
-                              initial_position=q_now)
-set_joints(ik)
-wait_until_reached(ik)
+target = cube + np.array([0, 0, 0.5])
+print(move_to(target))
 
 # Print results
 R = np.array(robot.getFromDef('GRIPPER').getOrientation()).reshape(3, 3)
