@@ -13,6 +13,13 @@ ACTIVE_LINKS_MASK = [False, False] + [True] * 7 + [False, False] # 2 base + 7 ac
 POS_TOL = 1e-3              # max accepted IK position error, in metres
 ANG_TOL = np.deg2rad(1.0)   # max accepted IK orientation error, in radians
 
+FINGER_OPEN = 0.04          # per-finger max opening, in metres (pad gap = left + right)
+EMPTY_GAP = 3e-3            # pad gap below this = closed on nothing, in metres
+OPEN_TOL = 0.5e-3           # per-finger tolerance for "fully open", in metres
+STOP_TOL = 1e-4             # gap change below this over STOP_STEPS steps = fingers stopped
+STOP_STEPS = 5
+GRIPPER_TIMEOUT = 2.0       # seconds
+
 # ---------------------------------------------------------------- Setup
 
 # create the Robot instance.
@@ -54,6 +61,12 @@ sensors = [robot.getDevice(f"{motor_name}_sensor") for motor_name in motor_names
 for sensor in sensors:
     sensor.enable(timestep)
 
+finger_sensors = [robot.getDevice("panda_finger::left_sensor"), robot.getDevice("panda_finger::right_sensor")]
+for sensor in finger_sensors:
+    sensor.enable(timestep)
+for finger in fingers:
+    finger.enableForceFeedback(timestep)
+
 robot.step(timestep)   # sensor values and Supervisor poses are only valid after the first step
 
 # ---------------------------------------------------------------- Helpers
@@ -63,12 +76,6 @@ def wait(seconds):
     end_time = robot.getTime() + seconds
     while robot.step(timestep) != -1 and robot.getTime() < end_time:
         pass
-
-def gripper(width):
-    """Per-finger opening width in meters. 0.0 = closed, 0.04 = open."""
-    for finger in fingers:
-        finger.setPosition(width)
-    wait(1.0)  # wait for the gripper to move
 
 def wait_until_reached(ik, tol=1e-3, timeout_ms=5000):
     """Wait until the robot reaches the commanded joint angles (or timeout)."""
@@ -161,27 +168,115 @@ def move_to(target_world, yaw=0.0):
             "pos_err_mm": round(float(pos_err) * 1000, 2),
             "ang_err_deg": round(float(np.rad2deg(ang_err)), 2)}
 
-# ---------------------------------------------------------------- Demo
+# ---------------------------------------------------------------- Gripper
 
-cube = np.array(robot.getFromDef('CUBE').getPosition())
+def finger_width():
+    """Gap between the finger pads in metres (sum of the two finger positions)."""
+    return sum(s.getValue() for s in finger_sensors)
 
-# Open the gripper
-gripper(0.04)
+def gripper_state():
+    """Read-only gripper state, no motion. Holding = the pads stopped
+    between closed-on-nothing and fully open."""
+    left, right = (s.getValue() for s in finger_sensors)
+    width = left + right
+    holding = EMPTY_GAP < width < 2 * (FINGER_OPEN - OPEN_TOL)
+    return {"holding": bool(holding),
+            "width_mm": round(width * 1000, 1),
+            "left_mm": round(left * 1000, 1),
+            "right_mm": round(right * 1000, 1),
+            "force_n": [round(f.getForceFeedback(), 1) for f in fingers]}
 
-# Move to the cube
-print(move_to(cube + np.array([0, 0, 0.1])))
-print(move_to(cube))
+def close_gripper(timeout=GRIPPER_TIMEOUT):
+    """Close until the fingers stop (on an object or fully closed).
+    Closing on nothing is a failed grasp. Returns a result dict."""
+    for finger in fingers:
+        finger.setPosition(0.0)
 
-# Close the gripper
-gripper(0.0)
+    # Stopped = the gap changed less than STOP_TOL over the last STOP_STEPS steps.
+    # A target-reached check would never fire: with a cube in between, the fingers never get to 0.
+    start = robot.getTime()
+    widths = []
+    stopped = False
+    while robot.getTime() - start < timeout and robot.step(timestep) != -1:
+        widths.append(finger_width())
+        if len(widths) > STOP_STEPS and abs(widths[-1] - widths[-1 - STOP_STEPS]) < STOP_TOL:
+            stopped = True
+            break
 
-# Move the robot up by 0.5 meters
-target = cube + np.array([0, 0, 0.5])
-print(move_to(target))
+    state = gripper_state()
+    if not stopped:
+        reason = "timeout"
+    elif not state["holding"]:
+        reason = "grasp_failed"
+    else:
+        reason = "ok"
+    return {"ok": reason == "ok", "reason": reason, **state,
+            "time_s": round(robot.getTime() - start, 3)}
 
-# Print results
-R = np.array(robot.getFromDef('GRIPPER').getOrientation()).reshape(3, 3)
-print(robot.getFromDef('GRIPPER').getPosition() + R[:, 2] * TCP_OFFSET, "vs", target)
+def open_gripper(timeout=GRIPPER_TIMEOUT):
+    """Open fully. A timeout means the fingers were blocked from outside,
+    so it is reported as a failure. Returns a result dict."""
+    for finger in fingers:
+        finger.setPosition(FINGER_OPEN)
+
+    start = robot.getTime()
+    opened = False
+    while robot.getTime() - start < timeout and robot.step(timestep) != -1:
+        if all(abs(s.getValue() - FINGER_OPEN) < OPEN_TOL for s in finger_sensors):
+            opened = True
+            break
+
+    return {"ok": opened, "reason": "ok" if opened else "timeout", **gripper_state(),
+            "time_s": round(robot.getTime() - start, 3)}
+
+# ---------------------------------------------------------------- Demo (step 3 acceptance tests)
+
+cube_node = robot.getFromDef('CUBE')
+LIFT = np.array([0, 0, 0.1])
+
+def cube_pos():
+    """Ground truth from the Supervisor."""
+    return np.array(cube_node.getPosition())
+
+def go(p):
+    """move_to that only prints when it fails, to keep the test output readable."""
+    result = move_to(p)
+    if not result["ok"]:
+        print("  move_to failed:", result)
+
+print("Finger max force [N]:", [f.getMaxForce() for f in fingers])
+
+# 1. Close in the air -> grasp_failed, width ~0
+print("close in air:", close_gripper())
+
+# 2. Open -> ok, width ~80 mm
+print("open:", open_gripper())
+
+# 3. Centred grasp, lift 10 cm, put back. Three times, to see the noise of the stopped width.
+for i in range(3):
+    start = cube_pos()
+    go(start + LIFT)
+    go(start)
+    print(f"grasp {i}:", close_gripper())
+    go(start + LIFT)
+    print(f"lifted {i}:", gripper_state(), "| cube dz [m]:", round(cube_pos()[2] - start[2], 4))
+    go(start)
+    open_gripper()
+    go(start + LIFT)
+
+# 4. Off-centre grasp: TCP 1 cm off along the finger axis (world x at yaw=0)
+start = cube_pos()
+off = start + np.array([0.01, 0, 0])
+go(off + LIFT)
+go(off)
+print("off-centre grasp:", close_gripper(), "| cube shift [mm]:", np.round((cube_pos() - start) * 1000, 1))
+go(off + LIFT)
+print("off-centre lifted:", gripper_state(), "| cube dz [m]:", round(cube_pos()[2] - start[2], 4))
+
+# 5. Open in the air -> the cube falls
+print("open in air:", open_gripper())
+wait(1.0)
+print("after drop:", gripper_state(), "| cube z [m]:", round(cube_pos()[2], 4))
 
 
 while robot.step(timestep) != -1:
