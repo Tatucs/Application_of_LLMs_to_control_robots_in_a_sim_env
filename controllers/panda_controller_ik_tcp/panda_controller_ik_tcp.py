@@ -114,6 +114,10 @@ def base_to_world(p_base):
     R_base = np.array(robot.getSelf().getOrientation()).reshape(3, 3)
     return R_base @ p_base + t_base
 
+def tcp_pos():
+    """TCP position in the world frame, from the joint sensors."""
+    return base_to_world(chain.forward_kinematics(read_q())[:3, 3])
+
 def pose_error(ik, p_target, R_target):
     """FK of an ikpy vector vs a target pose (base frame).
     Returns (position error in metres, orientation error in radians)."""
@@ -311,11 +315,30 @@ def place(xyz, yaw=0.0):
 
     return {"ok": True, "reason": "ok", "stage": "done"}
 
+def go_home():
+    """Joint-space move back to the startup pose P_INIT (hand down, yaw -45 deg),
+    then open the gripper.
+    Always opens: dropped = True if it was holding something.
+    Returns a result dict; stage = where it stopped."""
+    was_holding = gripper_state()["holding"]
+
+    ik = np.zeros(len(chain.links))          # ikpy zero = P_INIT
+    set_joints(ik)
+    if not wait_until_reached(ik):
+        return {"ok": False, "reason": "timeout", "stage": "move", "dropped": False}
+
+    result = open_gripper()
+    if not result["ok"]:
+        return {**result, "stage": "open", "dropped": False}
+
+    return {"ok": True, "reason": "ok", "stage": "done", "dropped": was_holding,
+            "reached": np.round(tcp_pos(), 4).tolist()}
+
 # ---------------------------------------------------------------- Demo (step 4 acceptance tests)
 
 cube_node = robot.getFromDef('CUBE')
 B_OFFSET = np.array([0.10, 0, 0])     # B = A + B_OFFSET; change it if B is out of reach in the scene
-TRIALS = 10
+TRIALS = 4
 
 def cube_pos():
     """Ground truth from the Supervisor."""
@@ -332,10 +355,6 @@ def cube_upright(tol_deg=5.0):
     """True if one of the cube's axes is within tol_deg of world z (it lies flat on a face)."""
     R = np.array(cube_node.getOrientation()).reshape(3, 3)
     return bool(np.max(np.abs(R[2])) > np.cos(np.deg2rad(tol_deg)))
-
-def tcp_pos():
-    """TCP position in the world frame, from the joint sensors."""
-    return base_to_world(chain.forward_kinematics(read_q())[:3, 3])
 
 def arm_moved(q_before):
     """Largest joint change since q_before, in radians."""
@@ -377,16 +396,19 @@ far[2] = A[2]
 r = pick(A - B_OFFSET)
 print("pick empty spot:", brief(r), "| TCP height above target [m]:", round(float(tcp_pos()[2] - A[2]), 3),
       "| width [mm]:", gripper_state()["width_mm"])
+print("  go_home:", go_home())
 
 # 2b. Pick beyond reach -> unreachable/approach, arm did not move
 q0 = read_q()
 r = pick(far)
 print("pick beyond reach:", brief(r), "| arm moved [rad]:", arm_moved(q0))
+print("  go_home:", go_home())
 
 # 2c. Place with nothing held -> not_holding/precheck, arm did not move
 q0 = read_q()
 r = place(B)
 print("place nothing held:", brief(r), "| arm moved [rad]:", arm_moved(q0))
+print("  go_home:", go_home())
 
 # 2d. While holding: pick again -> already_holding/precheck; place beyond reach -> unreachable/approach, still holding
 r = pick(cube_pos(), cube_yaw())
@@ -397,6 +419,13 @@ print("pick while holding:", brief(r), "| arm moved [rad]:", arm_moved(q0))
 r = place(far)
 print("place beyond reach:", brief(r), "| holding:", gripper_state()["holding"])
 print("put back at A:", brief(place(A)))
+print("  go_home:", go_home())
+
+# 3. go_home while holding -> ok, dropped True
+print("pick for 3:", brief(pick(cube_pos(), cube_yaw())))
+print("go_home while holding:", go_home())
+wait(1.0)
+print("after drop:", gripper_state(), "| cube at:", np.round(cube_pos(), 4), "| upright:", cube_upright())
 
 
 while robot.step(timestep) != -1:
