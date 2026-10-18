@@ -20,6 +20,9 @@ STOP_TOL = 1e-4             # gap change below this over STOP_STEPS steps = fing
 STOP_STEPS = 5
 GRIPPER_TIMEOUT = 2.0       # seconds
 
+APPROACH_HEIGHT = 0.10      # TCP clearance above the object before descending / after lifting, in metres
+RELEASE_HEIGHT = 0.005      # place releases this far above the target, so the object is not pressed into the table
+
 # ---------------------------------------------------------------- Setup
 
 # create the Robot instance.
@@ -229,54 +232,171 @@ def open_gripper(timeout=GRIPPER_TIMEOUT):
     return {"ok": opened, "reason": "ok" if opened else "timeout", **gripper_state(),
             "time_s": round(robot.getTime() - start, 3)}
 
-# ---------------------------------------------------------------- Demo (step 3 acceptance tests)
+# ---------------------------------------------------------------- pick / place
+
+def pick(xyz, yaw=0.0):
+    """Grasp the object whose centre is at xyz (x, y, z in metres, world frame),
+    gripper rotated by yaw (rad). A failure after the approach leaves the arm
+    above xyz with the gripper open. Returns a result dict; stage = where it stopped."""
+    xyz = np.array(xyz)
+    above = xyz + [0, 0, APPROACH_HEIGHT]
+
+    # Never grasp a second object with the first one in hand
+    if gripper_state()["holding"]:
+        return {"ok": False, "reason": "already_holding", "stage": "precheck", **gripper_state()}
+
+    result = open_gripper()
+    if not result["ok"]:
+        return {**result, "stage": "open"}
+
+    result = move_to(above, yaw)
+    if not result["ok"]:
+        return {**result, "stage": "approach"}
+
+    result = move_to(xyz, yaw)
+    if not result["ok"]:
+        move_to(above, yaw)                  # back up: the next call must not start down at the table
+        return {**result, "stage": "descend"}
+
+    result = close_gripper()
+    if not result["ok"]:
+        open_gripper()
+        move_to(above, yaw)
+        return {**result, "stage": "close"}
+
+    result = move_to(above, yaw)
+    if not result["ok"]:
+        return {**result, "stage": "lift"}
+
+    # The object can slip out while lifting
+    state = gripper_state()
+    if not state["holding"]:
+        return {"ok": False, "reason": "grasp_slipped", "stage": "lift", **state}
+
+    return {"ok": True, "reason": "ok", "stage": "done", **state}
+
+def place(xyz, yaw=0.0):
+    """Put the held object so its centre ends at xyz (x, y, z in metres, world frame),
+    gripper rotated by yaw (rad). Releases RELEASE_HEIGHT above xyz.
+    Returns a result dict; stage = where it stopped."""
+    xyz = np.array(xyz)
+    above = xyz + [0, 0, APPROACH_HEIGHT]
+
+    # Nothing to place: return without moving
+    if not gripper_state()["holding"]:
+        return {"ok": False, "reason": "not_holding", "stage": "precheck", **gripper_state()}
+
+    result = move_to(above, yaw)
+    if not result["ok"]:
+        return {**result, "stage": "approach"}
+
+    result = move_to(xyz + [0, 0, RELEASE_HEIGHT], yaw)
+    if not result["ok"]:
+        move_to(above, yaw)
+        return {**result, "stage": "descend"}
+
+    # The object may have slipped during the transfer
+    state = gripper_state()
+    if not state["holding"]:
+        move_to(above, yaw)
+        return {"ok": False, "reason": "grasp_slipped", "stage": "descend", **state}
+
+    result = open_gripper()
+    if not result["ok"]:
+        return {**result, "stage": "release"}
+
+    result = move_to(above, yaw)
+    if not result["ok"]:
+        return {**result, "stage": "retract"}
+
+    return {"ok": True, "reason": "ok", "stage": "done"}
+
+# ---------------------------------------------------------------- Demo (step 4 acceptance tests)
 
 cube_node = robot.getFromDef('CUBE')
-LIFT = np.array([0, 0, 0.1])
+B_OFFSET = np.array([0.10, 0, 0])     # B = A + B_OFFSET; change it if B is out of reach in the scene
+TRIALS = 10
 
 def cube_pos():
     """Ground truth from the Supervisor."""
     return np.array(cube_node.getPosition())
 
-def go(p):
-    """move_to that only prints when it fails, to keep the test output readable."""
-    result = move_to(p)
-    if not result["ok"]:
-        print("  move_to failed:", result)
+def cube_yaw():
+    """Cube yaw wrapped into [-pi/4, pi/4]. A cube can be grasped at any multiple of
+    90 deg from its own yaw; the one closest to 0 keeps the wrist away from its limits."""
+    R = np.array(cube_node.getOrientation()).reshape(3, 3)
+    yaw = np.arctan2(R[1, 0], R[0, 0])
+    return (yaw + np.pi / 4) % (np.pi / 2) - np.pi / 4
 
-print("Finger max force [N]:", [f.getMaxForce() for f in fingers])
+def cube_upright(tol_deg=5.0):
+    """True if one of the cube's axes is within tol_deg of world z (it lies flat on a face)."""
+    R = np.array(cube_node.getOrientation()).reshape(3, 3)
+    return bool(np.max(np.abs(R[2])) > np.cos(np.deg2rad(tol_deg)))
 
-# 1. Close in the air -> grasp_failed, width ~0
-print("close in air:", close_gripper())
+def tcp_pos():
+    """TCP position in the world frame, from the joint sensors."""
+    return base_to_world(chain.forward_kinematics(read_q())[:3, 3])
 
-# 2. Open -> ok, width ~80 mm
-print("open:", open_gripper())
+def arm_moved(q_before):
+    """Largest joint change since q_before, in radians."""
+    return round(float(np.max(np.abs(read_q() - q_before))), 4)
 
-# 3. Centred grasp, lift 10 cm, put back. Three times, to see the noise of the stopped width.
-for i in range(3):
-    start = cube_pos()
-    go(start + LIFT)
-    go(start)
-    print(f"grasp {i}:", close_gripper())
-    go(start + LIFT)
-    print(f"lifted {i}:", gripper_state(), "| cube dz [m]:", round(cube_pos()[2] - start[2], 4))
-    go(start)
-    open_gripper()
-    go(start + LIFT)
+def brief(result):
+    """reason/stage only, to keep one transfer on one line."""
+    return f"{result['reason']}/{result['stage']}"
 
-# 4. Off-centre grasp: TCP 1 cm off along the finger axis (world x at yaw=0)
-start = cube_pos()
-off = start + np.array([0.01, 0, 0])
-go(off + LIFT)
-go(off)
-print("off-centre grasp:", close_gripper(), "| cube shift [mm]:", np.round((cube_pos() - start) * 1000, 1))
-go(off + LIFT)
-print("off-centre lifted:", gripper_state(), "| cube dz [m]:", round(cube_pos()[2] - start[2], 4))
+# 1. A <-> B loop. Pick where the Supervisor sees the cube, place at the nominal target.
+A = cube_pos()
+B = A + B_OFFSET
+print("A:", np.round(A, 4), "| B:", np.round(B, 4))
 
-# 5. Open in the air -> the cube falls
-print("open in air:", open_gripper())
-wait(1.0)
-print("after drop:", gripper_state(), "| cube z [m]:", round(cube_pos()[2], 4))
+errors = []
+for trial in range(1, TRIALS + 1):
+    for name, target in (("A->B", B), ("B->A", A)):
+        yaw = cube_yaw()
+        p = pick(cube_pos(), yaw)
+        q = place(target, yaw) if p["ok"] else {"ok": False, "reason": "skipped", "stage": "-"}
+        err_mm = float(np.linalg.norm((cube_pos() - target)[:2]) * 1000)
+        if p["ok"] and q["ok"]:
+            errors.append(err_mm)
+        print(f"trial {trial:2d} {name}: pick {brief(p)}, place {brief(q)}"
+              f" | grasp width {p.get('width_mm')} mm | xy err {err_mm:.1f} mm | upright {cube_upright()}")
+
+print(f"transfers ok: {len(errors)}/{2 * TRIALS}", end="")
+if errors:
+    print(f" | xy err mean {np.mean(errors):.1f} mm, max {np.max(errors):.1f} mm")
+else:
+    print()
+
+# 2. Failure paths.
+print("--- failure-path tests")
+far = np.array(robot.getSelf().getPosition()) + [1.5, 0, 0]   # well beyond the ~0.85 m reach
+far[2] = A[2]
+
+# 2a. Pick where there is no cube -> grasp_failed/close, arm back up, gripper open
+r = pick(A - B_OFFSET)
+print("pick empty spot:", brief(r), "| TCP height above target [m]:", round(float(tcp_pos()[2] - A[2]), 3),
+      "| width [mm]:", gripper_state()["width_mm"])
+
+# 2b. Pick beyond reach -> unreachable/approach, arm did not move
+q0 = read_q()
+r = pick(far)
+print("pick beyond reach:", brief(r), "| arm moved [rad]:", arm_moved(q0))
+
+# 2c. Place with nothing held -> not_holding/precheck, arm did not move
+q0 = read_q()
+r = place(B)
+print("place nothing held:", brief(r), "| arm moved [rad]:", arm_moved(q0))
+
+# 2d. While holding: pick again -> already_holding/precheck; place beyond reach -> unreachable/approach, still holding
+r = pick(cube_pos(), cube_yaw())
+print("pick normally:", brief(r))
+q0 = read_q()
+r = pick(cube_pos(), cube_yaw())
+print("pick while holding:", brief(r), "| arm moved [rad]:", arm_moved(q0))
+r = place(far)
+print("place beyond reach:", brief(r), "| holding:", gripper_state()["holding"])
+print("put back at A:", brief(place(A)))
 
 
 while robot.step(timestep) != -1:
