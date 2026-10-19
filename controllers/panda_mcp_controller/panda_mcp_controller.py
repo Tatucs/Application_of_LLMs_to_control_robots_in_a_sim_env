@@ -377,20 +377,32 @@ status = {"heartbeat": None, "busy_with": None, "last_result": None, "holding": 
 def write_status(**changes):
     """Merges the changes into status, stamps the heartbeat, writes status.json."""
     status.update(changes)
+    status["holding"] = gripper_state()["holding"]
     status["heartbeat"] = {"sim_time": round(robot.getTime(), 3), "wall_time": time.time()}
     write_json(STATUS_FILE, status)
-
-ACTIONS = {}   # action name -> function
 
 def dispatch(cmd):
     """Runs one command and returns a result dict. Never raises."""
     func = ACTIONS.get(cmd.get("action"))
-    if func is None:
+    if func is None:                                # unknown action
         return {"ok": False, "reason": "not_found", "detail": f"unknown action {cmd.get('action')!r}"}
     try:
         return func(**(cmd.get("args") or {}))
     except Exception as e:
         return {"ok": False, "reason": "error", "detail": f"{type(e).__name__}: {e}"}
+
+def wrap_yaw(yaw):
+    """Wraps yaw into [-pi/4, pi/4]. A cube can be grasped at any multiple of
+    90 deg from its own yaw; the one closest to 0 keeps the wrist away from its limits."""
+    return (yaw + np.pi / 4) % (np.pi / 2) - np.pi / 4
+
+def cmd_pick(x, y, z, yaw=0.0):
+    return pick([x, y, z], wrap_yaw(yaw))
+
+def cmd_place(x, y, z, yaw=0.0):
+    return place([x, y, z], wrap_yaw(yaw))
+
+ACTIONS = {"pick": cmd_pick, "place": cmd_place, "go_home": go_home}   # action name -> function
 
 # ---------------------------------------------------------------- Main loop
 
