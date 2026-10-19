@@ -1,0 +1,31 @@
+#VRML_SIM R2025a utf8
+
+PROTO CUBE [
+  field SFVec3f    translation 0.55 0.3 0.02
+  field SFRotation rotation    0 0 1 0
+  field SFColor    color       0 0 0.498039
+  field SFString   name        "cube"
+  field SFVec3f	   size        0.04 0.04 0.04
+]
+{
+  Solid {
+    translation IS translation
+    rotation IS rotation
+    name IS name
+    children [
+      Shape {
+		  appearance PBRAppearance {
+			baseColor IS color
+			roughness 1
+			metalness 0
+			emissiveColor IS color
+		  }
+		  geometry Box {
+			size IS size
+		  }
+		}
+    ]
+    boundingObject Box {size IS size}
+    physics Physics {density 500}
+  }
+}
