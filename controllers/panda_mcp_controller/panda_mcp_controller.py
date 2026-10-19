@@ -1,6 +1,10 @@
 """panda_mcp_controller controller."""
 from controller import Robot, Supervisor
 import numpy as np
+import json
+import os
+import time
+from pathlib import Path
 import ikpy
 from ikpy.chain import Chain
 from ikpy.link import URDFLink
@@ -71,6 +75,36 @@ for finger in fingers:
     finger.enableForceFeedback(timestep)
 
 robot.step(timestep)   # sensor values and Supervisor poses are only valid after the first step
+
+# ---------------------------------------------------------------- File I/O
+
+# <repo>/data/panda. The MCP server resolves <repo>/data from its own __file__, so both sides meet here.
+DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "panda"
+COMMANDS_FILE = DATA_DIR / "commands.json"
+STATUS_FILE = DATA_DIR / "status.json"
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+print("Data dir:", DATA_DIR)
+
+def write_json(path, data, retries=5):
+    """Writes to a .tmp file, then swap it in, so the reader never sees
+    a half-written file."""
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data), encoding="utf-8")
+    for _ in range(retries):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:      # Windows: the other process has the file open at this instant
+            time.sleep(0.01)
+    os.replace(tmp, path)            # last attempt: a real failure should be visible -> raise
+
+def read_json(path):
+    """Parsed JSON, or None if the file is missing, half-written or locked.
+    None means 'not there yet' so the read should be retried later. Does not raise exceptions."""
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, PermissionError, json.JSONDecodeError):
+        return None
 
 # ---------------------------------------------------------------- Helpers
 
@@ -336,6 +370,8 @@ def go_home():
 
 
 # ---------------------------------------------------------------- Main loop
+
+write_json(STATUS_FILE, {"started_at": robot.getTime()})
 
 while robot.step(timestep) != -1:
     pass
