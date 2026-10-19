@@ -368,11 +368,47 @@ def go_home():
     return {"ok": True, "reason": "ok", "stage": "done", "dropped": was_holding,
             "reached": np.round(tcp_pos(), 4).tolist()}
 
+# ---------------------------------------------------------------- Command loop
+
+HEARTBEAT_PERIOD = 0.5   # s sim time between idle status writes
+
+status = {"heartbeat": None, "busy_with": None, "last_result": None, "holding": False}
+
+def write_status(**changes):
+    """Merges the changes into status, stamps the heartbeat, writes status.json."""
+    status.update(changes)
+    status["heartbeat"] = {"sim_time": round(robot.getTime(), 3), "wall_time": time.time()}
+    write_json(STATUS_FILE, status)
+
+ACTIONS = {}   # action name -> function
+
+def dispatch(cmd):
+    """Runs one command and returns a result dict. Never raises."""
+    func = ACTIONS.get(cmd.get("action"))
+    if func is None:
+        return {"ok": False, "reason": "not_found", "detail": f"unknown action {cmd.get('action')!r}"}
+    try:
+        return func(**(cmd.get("args") or {}))
+    except Exception as e:
+        return {"ok": False, "reason": "error", "detail": f"{type(e).__name__}: {e}"}
 
 # ---------------------------------------------------------------- Main loop
 
-write_json(STATUS_FILE, {"started_at": robot.getTime()})
+cmd = read_json(COMMANDS_FILE)
+last_id = cmd.get("id") if isinstance(cmd, dict) else None   # stale command
+print("Ignoring stale command id:", last_id)
+write_status()
+last_beat = robot.getTime()
 
 while robot.step(timestep) != -1:
-    pass
+    cmd = read_json(COMMANDS_FILE)
+    if isinstance(cmd, dict) and cmd.get("id") is not None and cmd["id"] != last_id:
+        last_id = cmd["id"]
+        write_status(busy_with=last_id)
+        result = dispatch(cmd)
+        write_status(busy_with=None, last_result={"id": last_id, **result})
+        last_beat = robot.getTime()
+    elif robot.getTime() - last_beat >= HEARTBEAT_PERIOD:
+        write_status()
+        last_beat = robot.getTime()
  
