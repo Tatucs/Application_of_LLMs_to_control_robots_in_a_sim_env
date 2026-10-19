@@ -27,6 +27,11 @@ GRIPPER_TIMEOUT = 2.0       # seconds
 APPROACH_HEIGHT = 0.10      # TCP clearance above the object before descending / after lifting, in metres
 RELEASE_HEIGHT = 0.005      # place releases this far above the target, so the object is not pressed into the table
 
+HEARTBEAT_PERIOD = 0.5      # s sim time between idle status writes
+OBJECT_PREFIX = "CUBE"      # DEF prefix of graspable objects
+COLOURS = {"red": (1, 0, 0), "green": (0, 1, 0), "blue": (0, 0, 1),
+           "yellow": (1, 1, 0), "white": (1, 1, 1)}
+
 # ---------------------------------------------------------------- Setup
 
 # create the Robot instance.
@@ -368,11 +373,46 @@ def go_home():
     return {"ok": True, "reason": "ok", "stage": "done", "dropped": was_holding,
             "reached": np.round(tcp_pos(), 4).tolist()}
 
+# ---------------------------------------------------------------- Perception tools
+
+def scene_nodes(prefix):
+    """Top-level scene nodes whose DEF starts with prefix."""
+    children = robot.getRoot().getField("children")
+    nodes = (children.getMFNode(i) for i in range(children.getCount()))
+    return [n for n in nodes if n.getDef().startswith(prefix)]
+
+def node_colour(node):
+    """Nearest colour word to the node's appearance baseColor
+    (until camera recognitionColors)."""
+    try:
+        rgb = np.array(node.getField("appearance").getSFNode().getField("baseColor").getSFColor())
+    except AttributeError:      # getField / getSFNode returned None: no appearance or no baseColor
+        return "unknown"
+    return min(COLOURS, key=lambda c: np.linalg.norm(rgb - np.array(COLOURS[c])))
+
+def get_objects():
+    """All graspable objects: id + colour."""
+    objects = [{"id": n.getDef().lower(), "colour": node_colour(n)} for n in scene_nodes(OBJECT_PREFIX)]
+    return {"ok": True, "reason": "ok", "objects": objects}
+
+def get_target_position(object_id):
+    """World-frame centre (m) and yaw (rad) of one object, ready to pass to pick."""
+    node = robot.getFromDef(str(object_id).upper())
+    if node is None or not node.getDef().startswith(OBJECT_PREFIX):
+        return {"ok": False, "reason": "not_found",
+                "detail": f"no object {object_id!r}, call get_objects for the ids"}
+    x, y, z = node.getPosition()
+    R = np.array(node.getOrientation()).reshape(3, 3)
+    yaw = float(np.arctan2(R[1, 0], R[0, 0]))     # rotation about world z
+    return {"ok": True, "reason": "ok", "object_id": object_id,
+            "x": round(x, 3), "y": round(y, 3), "z": round(z, 3), "yaw": round(yaw, 3)}
+
+def get_gripper_state():
+    """Read-only gripper state, ready to return to the client."""
+    state = gripper_state()
+    return {"ok": True, "reason": "ok", **state}
+
 # ---------------------------------------------------------------- Command loop
-
-HEARTBEAT_PERIOD = 0.5   # s sim time between idle status writes
-
-status = {"heartbeat": None, "busy_with": None, "last_result": None, "holding": False}
 
 def write_status(**changes):
     """Merges the changes into status, stamps the heartbeat, writes status.json."""
@@ -402,9 +442,16 @@ def cmd_pick(x, y, z, yaw=0.0):
 def cmd_place(x, y, z, yaw=0.0):
     return place([x, y, z], wrap_yaw(yaw))
 
-ACTIONS = {"pick": cmd_pick, "place": cmd_place, "go_home": go_home}   # action name -> function
 
 # ---------------------------------------------------------------- Main loop
+
+status = {"heartbeat": None, "busy_with": None, "last_result": None, "holding": False}
+ACTIONS = {"pick": cmd_pick,
+           "place": cmd_place,
+           "go_home": go_home,
+           "get_objects": get_objects,
+           "get_target_position": get_target_position,
+           "get_gripper_state": get_gripper_state}   # action name -> function
 
 cmd = read_json(COMMANDS_FILE)
 last_id = cmd.get("id") if isinstance(cmd, dict) else None   # stale command
@@ -418,7 +465,7 @@ while robot.step(timestep) != -1:
         last_id = cmd["id"]
         write_status(busy_with=last_id)
         result = dispatch(cmd)
-        write_status(busy_with=None, last_result={"id": last_id, **result})
+        write_status(busy_with=None, last_result={**result, "id": last_id})
         last_beat = robot.getTime()
     elif robot.getTime() - last_beat >= HEARTBEAT_PERIOD:
         write_status()
