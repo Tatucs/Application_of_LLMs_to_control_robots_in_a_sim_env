@@ -164,6 +164,76 @@ def get_gripper_state() -> dict:
     """
     return call("get_gripper_state", timeout=5.0)
 
+@mcp.tool()
+def get_objects() -> dict:
+    """List all graspable objects in the scene.
+
+    Call this first: the ids are needed by get_target_position.
+
+    Returns:
+        ok, reason, objects (list of dicts with id, colour).
+    """
+    return call("get_objects", timeout=5.0)
+
+@mcp.tool()
+def get_target_position(object_id: str) -> dict:
+    """Get the centre and rotation of one object, ready to pass to pick.
+
+    Args:
+        object_id: An id from get_objects, e.g. "cube_red".
+
+    Returns:
+        ok, reason, object_id, x, y, z (metres, world frame), yaw (rad).
+        reason "not_found" if the id does not exist.
+    """
+    return call("get_target_position", args={"object_id": object_id}, timeout=5.0)
+
+@mcp.tool()
+def pick(x: float, y: float, z: float, yaw: float = 0.0) -> dict:
+    """Pick up the object whose centre is at (x, y, z).
+
+    Take x, y, z and yaw from get_target_position. The gripper must be empty.
+    On failure the arm is back above the object with nothing held.
+
+    Args:
+        x, y, z: Object centre, metres, world frame.
+        yaw: Object rotation about the vertical axis, rad.
+
+    Returns:
+        ok, reason, stage (where it stopped), holding, width_mm.
+        reason is one of ok, already_holding, unreachable, grasp_failed,
+        grasp_slipped, timeout, busy, error.
+    """
+    return call("pick", args={"x": x, "y": y, "z": z, "yaw": yaw})
+
+@mcp.tool()
+def place(x: float, y: float, z: float, yaw: float = 0.0) -> dict:
+    """Put the held object down so its centre ends at (x, y, z).
+
+    The gripper must be holding something (see pick).
+
+    Args:
+        x, y, z: Target centre of the object, metres, world frame.
+        yaw: Rotation about the vertical axis, rad.
+
+    Returns:
+        ok, reason, stage (where it stopped).
+        reason is one of ok, not_holding, unreachable, grasp_slipped,
+        timeout, busy, error.
+    """
+    return call("place", args={"x": x, "y": y, "z": z, "yaw": yaw})
+
+@mcp.tool()
+def go_home() -> dict:
+    """Move the arm back to its start pose and open the gripper.
+
+    Use to recover after a failure or a timeout. Drops anything held.
+
+    Returns:
+        ok, reason, stage, dropped (True if it was holding something).
+    """
+    return call("go_home", timeout=30.0)
+
 # ----------------------------------------- main
 def main() -> None:
     """Create the data directory and start the MCP server on stdio.
