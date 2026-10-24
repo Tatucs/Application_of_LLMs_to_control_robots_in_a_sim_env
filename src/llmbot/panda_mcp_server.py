@@ -281,7 +281,7 @@ def pick(x: float, y: float, z: float, yaw: float = 0.0) -> dict:
     err = not_finite(x=x, y=y, z=z, yaw=yaw)
     if err:
         return err
-    return trim(call("pick", args={"x": x, "y": y, "z": z, "yaw": yaw}), timeout=30.0)
+    return trim(call("pick", args={"x": x, "y": y, "z": z, "yaw": yaw}, timeout=30.0))
 
 @mcp.tool()
 def place(x: float, y: float, z: float, yaw: float = 0.0) -> dict:
@@ -301,7 +301,7 @@ def place(x: float, y: float, z: float, yaw: float = 0.0) -> dict:
     err = not_finite(x=x, y=y, z=z, yaw=yaw)
     if err:
         return err
-    return trim(call("place", args={"x": x, "y": y, "z": z, "yaw": yaw}), timeout=30.0)
+    return trim(call("place", args={"x": x, "y": y, "z": z, "yaw": yaw}, timeout=30.0))
 
 @mcp.tool()
 def go_home() -> dict:
