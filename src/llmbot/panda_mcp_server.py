@@ -1,8 +1,8 @@
 '''
-MCP server fopr controlling the Panda robot in Webots.
+MCP server for controlling the Panda robot in Webots.
 
-This server works in conjkunction with the Webots controller (panda_mcp_controller.py)
-via the file system and sockets to exchange commands and status.
+This server works in conjunction with the Webots controller (panda_mcp_controller.py)
+via the file system (commands.json / status.json) to exchange commands and status.
 '''
 
 import json
@@ -281,7 +281,7 @@ def pick(x: float, y: float, z: float, yaw: float = 0.0) -> dict:
     err = not_finite(x=x, y=y, z=z, yaw=yaw)
     if err:
         return err
-    return trim(call("pick", args={"x": x, "y": y, "z": z, "yaw": yaw}))
+    return trim(call("pick", args={"x": x, "y": y, "z": z, "yaw": yaw}), timeout=30.0)
 
 @mcp.tool()
 def place(x: float, y: float, z: float, yaw: float = 0.0) -> dict:
@@ -301,7 +301,7 @@ def place(x: float, y: float, z: float, yaw: float = 0.0) -> dict:
     err = not_finite(x=x, y=y, z=z, yaw=yaw)
     if err:
         return err
-    return trim(call("place", args={"x": x, "y": y, "z": z, "yaw": yaw}))
+    return trim(call("place", args={"x": x, "y": y, "z": z, "yaw": yaw}), timeout=30.0)
 
 @mcp.tool()
 def go_home() -> dict:
@@ -312,7 +312,7 @@ def go_home() -> dict:
     Returns:
         ok, reason, stage, dropped (True if it was holding something).
     """
-    return trim(call("go_home", timeout=30.0))
+    return trim(call("go_home", timeout=20.0))
 
 # ----------------------------------------- main
 def main() -> None:
