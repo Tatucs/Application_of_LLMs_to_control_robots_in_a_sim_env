@@ -3,6 +3,7 @@
 Unit tests for the helpers run anywhere. The end-to-end tests drive the real
 arm through an MCP stdio client and are skipped unless Webots is running.
 """
+import asyncio
 import math
 import time
 from pathlib import Path
@@ -68,6 +69,39 @@ def test_not_finite_accepts_normal_numbers():
     assert server.not_finite(x=0.5, y=0.0, z=-0.1) is None
 
 
+# ----------------------------------------- request layer, fake status.json, no Webots
+@pytest.fixture
+def fake_link(tmp_path, monkeypatch):
+    """Point the server at a temp dir, so a test can write status.json itself."""
+    monkeypatch.setattr(server, "STATUS_FILE", tmp_path / "status.json")
+    monkeypatch.setattr(server, "COMMANDS_FILE", tmp_path / "commands.json")
+    return tmp_path
+
+
+def test_no_status_file_is_timeout(fake_link):
+    r = server.run_command("get_gripper_state")
+    assert r["reason"] == "timeout" and "not running" in r["detail"]
+
+
+def test_stale_heartbeat_is_timeout(fake_link):
+    # plan row 12: a paused sim stops the heartbeat
+    old = time.time() - 2 * server.HEARTBEAT_MAX_DELAY
+    server.write_json(server.STATUS_FILE, {"heartbeat": {"wall_time": old}, "busy_with": None})
+    start = time.monotonic()
+    r = server.run_command("get_gripper_state")
+    assert r["reason"] == "timeout" and "not running" in r["detail"]
+    assert time.monotonic() - start < 3.0
+    assert not server.COMMANDS_FILE.exists(), "no command may be sent to a dead sim"
+
+
+def test_busy_controller_is_busy(fake_link):
+    server.write_json(server.STATUS_FILE,
+                      {"heartbeat": {"wall_time": time.time()}, "busy_with": "other_id"})
+    r = server.run_command("get_gripper_state")
+    assert r["reason"] == "busy"
+    assert not server.COMMANDS_FILE.exists(), "no command may be sent while busy"
+
+
 # ----------------------------------------- end-to-end, needs Webots
 @pytest.fixture
 async def client():
@@ -94,7 +128,17 @@ async def cube_position(c: Client) -> dict:
 
 @needs_sim
 async def test_lists_all_tools(client):
-    assert {t.name for t in await client.list_tools()} == TOOLS
+    tools = await client.list_tools()
+    assert {t.name for t in tools} == TOOLS
+    assert all(t.description for t in tools), "every tool needs a docstring"
+
+
+@needs_sim
+async def test_every_object_has_a_position(client):
+    objs = await tool(client, "get_objects")
+    for o in objs["objects"]:
+        p = await tool(client, "get_target_position", {"object_id": o["id"]})
+        assert p["ok"] and p["object_id"] == o["id"], p
 
 
 @needs_sim
@@ -146,3 +190,43 @@ async def test_pick_place_cycle(client):
     finally:
         r = await tool(client, "go_home")        # always leave the arm at home
     assert r["ok"] and r["dropped"] is False
+    assert (await tool(client, "get_gripper_state"))["holding"] is False
+
+
+@needs_sim
+async def test_pick_empty_spot_grasp_failed(client):
+    xyz = await cube_position(client)
+    empty = {**xyz, "x": xyz["x"] - 0.10}        # 10 cm from the cube, nothing there
+    try:
+        r = await tool(client, "pick", empty)
+        assert r["reason"] == "grasp_failed" and r["stage"] == "close", r
+        assert r["holding"] is False
+    finally:
+        await tool(client, "go_home")
+
+
+@needs_sim
+async def test_pick_out_of_reach_unreachable(client):
+    xyz = await cube_position(client)
+    far = {**xyz, "x": xyz["x"] + 1.5}           # Panda reach is ~0.85 m
+    try:
+        r = await tool(client, "pick", far)
+        assert r["reason"] == "unreachable" and r["stage"] == "approach", r
+    finally:
+        await tool(client, "go_home")
+
+
+@needs_sim
+async def test_second_client_gets_busy(client):
+    """Plan row 13: while one client's pick runs, another client's call is refused."""
+    xyz = await cube_position(client)
+    empty = {**xyz, "x": xyz["x"] - 0.10}        # a long pick that does not move the cube
+    async with Client(SERVER) as other:
+        running = asyncio.create_task(tool(client, "pick", empty))
+        try:
+            await asyncio.sleep(0.5)             # let the controller pick up the command
+            r = await tool(other, "get_gripper_state")
+            assert r["reason"] == "busy", r
+        finally:
+            await running
+            await tool(client, "go_home")
