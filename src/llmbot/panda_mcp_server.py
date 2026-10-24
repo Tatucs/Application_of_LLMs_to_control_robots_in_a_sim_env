@@ -207,7 +207,7 @@ def get_gripper_state() -> dict:
 
     Returns:
         ok, reason, holding (bool), width_mm (opening between the
-        fingers in mm), force_n (finger forces in N).
+        fingers in mm).
     """
     return trim(call("get_gripper_state", timeout=5.0))
 
