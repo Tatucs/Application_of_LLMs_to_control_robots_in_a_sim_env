@@ -7,6 +7,7 @@ via the file system and sockets to exchange commands and status.
 
 import json
 import logging
+import math
 import os
 import sys
 import time
@@ -34,6 +35,10 @@ STATUS_FILE = DATA_DIR / "status.json"
 PICKUP_TIMEOUT = 2.0            # s wall time for the controller to accept a command
 HEARTBEAT_MAX_DELAY = 3.0       # s wall time; older heartbeat = sim paused or stopped
 POLL_PERIOD = 0.05              # s between status reads
+
+# Keys the model sees; everything else is controller-side debug
+KEEP = {"ok", "reason", "detail", "stage", "holding", "width_mm", "dropped",
+        "objects", "object_id", "x", "y", "z", "yaw"}
 
 # Create MCP server
 mcp = FastMCP("Panda MCP Server")
@@ -84,7 +89,7 @@ def read_json(path: Path) -> dict | None:
     except (FileNotFoundError, PermissionError, json.JSONDecodeError):
         return None
 
-# ----------------------------------------- request
+# ----------------------------------------- request / tool wrapper
 def result_if_done(status: dict | None, cmd_id: str) -> dict | None:
     """Check if the controller has finished a command.
     
@@ -149,8 +154,50 @@ def call(action: str, args: dict | None = None, timeout: float = 60.0) -> dict:
     return {"ok": False, "reason": "timeout",
             "detail": f"no result within {timeout} s, state unknown, call get_gripper_state"}
 
+# ----------------------------------------- MCP helpers
+def clean(value):
+    """Round floats to 3 decimals and turn -0.0 into 0.0.
+    
+    Args:
+        value: A JSON value, nested lists and dicts allowed.
 
-# ----------------------------------------- tools
+    Returns:
+        The same structure with every float cleaned.
+    """
+    if isinstance(value, float):
+        return round(value, 3) + 0.0
+    if isinstance(value, list):
+        return [clean(v) for v in value]
+    if isinstance(value, dict):
+        return {k: clean(v) for k, v in value.items()}
+    return value
+
+def trim(result: dict) -> dict:
+    """Keep only the keys in KEEP and clean the values.
+
+    Args:
+        result: Result dict from call().
+
+    Returns:
+        A smaller dict for the model, without id, debug values.
+    """
+    return {k: clean(v) for k, v in result.items() if k in KEEP}
+
+def not_finite(**values: float) -> dict | None:
+    """Check if any of the given values is NaN or infinite.
+
+    Args:
+        values: float value(s) to check.
+    
+    Returns:
+        An error result if any value is not finite, or None if all are finite.
+    """
+    bad = [k for k, v in values.items() if not math.isfinite(v)]
+    if bad:
+        return {"ok": False, "reason": "error", "detail": f"non-finite values: {', '.join(bad)}"}
+    return None
+
+# ----------------------------------------- MCP tools
 @mcp.tool()
 def get_gripper_state() -> dict:
     """Report whether the gripper holds an object, and how wide it is open.
@@ -162,7 +209,7 @@ def get_gripper_state() -> dict:
         ok, reason, holding (bool), width_mm (opening between the
         fingers in mm), force_n (finger forces in N).
     """
-    return call("get_gripper_state", timeout=5.0)
+    return trim(call("get_gripper_state", timeout=5.0))
 
 @mcp.tool()
 def get_objects() -> dict:
@@ -173,7 +220,7 @@ def get_objects() -> dict:
     Returns:
         ok, reason, objects (list of dicts with id, colour).
     """
-    return call("get_objects", timeout=5.0)
+    return trim(call("get_objects", timeout=5.0))
 
 @mcp.tool()
 def get_target_position(object_id: str) -> dict:
@@ -186,7 +233,9 @@ def get_target_position(object_id: str) -> dict:
         ok, reason, object_id, x, y, z (metres, world frame), yaw (rad).
         reason "not_found" if the id does not exist.
     """
-    return call("get_target_position", args={"object_id": object_id}, timeout=5.0)
+    if not object_id.strip():
+        return {"ok": False, "reason": "error", "detail": "object_id is empty"}
+    return trim(call("get_target_position", args={"object_id": object_id}, timeout=5.0))
 
 @mcp.tool()
 def pick(x: float, y: float, z: float, yaw: float = 0.0) -> dict:
@@ -204,7 +253,10 @@ def pick(x: float, y: float, z: float, yaw: float = 0.0) -> dict:
         reason is one of ok, already_holding, unreachable, grasp_failed,
         grasp_slipped, timeout, busy, error.
     """
-    return call("pick", args={"x": x, "y": y, "z": z, "yaw": yaw})
+    err = not_finite(x=x, y=y, z=z, yaw=yaw)
+    if err:
+        return err
+    return trim(call("pick", args={"x": x, "y": y, "z": z, "yaw": yaw}))
 
 @mcp.tool()
 def place(x: float, y: float, z: float, yaw: float = 0.0) -> dict:
@@ -221,7 +273,10 @@ def place(x: float, y: float, z: float, yaw: float = 0.0) -> dict:
         reason is one of ok, not_holding, unreachable, grasp_slipped,
         timeout, busy, error.
     """
-    return call("place", args={"x": x, "y": y, "z": z, "yaw": yaw})
+    err = not_finite(x=x, y=y, z=z, yaw=yaw)
+    if err:
+        return err
+    return trim(call("place", args={"x": x, "y": y, "z": z, "yaw": yaw}))
 
 @mcp.tool()
 def go_home() -> dict:
@@ -232,7 +287,7 @@ def go_home() -> dict:
     Returns:
         ok, reason, stage, dropped (True if it was holding something).
     """
-    return call("go_home", timeout=30.0)
+    return trim(call("go_home", timeout=30.0))
 
 # ----------------------------------------- main
 def main() -> None:
