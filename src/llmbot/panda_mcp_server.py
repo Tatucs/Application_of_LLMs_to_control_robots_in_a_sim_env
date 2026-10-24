@@ -149,6 +149,21 @@ def call(action: str, args: dict | None = None, timeout: float = 60.0) -> dict:
     return {"ok": False, "reason": "timeout",
             "detail": f"no result within {timeout} s, state unknown, call get_gripper_state"}
 
+
+# ----------------------------------------- tools
+@mcp.tool()
+def get_gripper_state() -> dict:
+    """Report whether the gripper holds an object, and how wide it is open.
+    
+    Use before pick (gripper must be empty) or place (must be holding),
+    and after a timeout, when the arm state is unknown.
+
+    Returns:
+        ok, reason, holding (bool), width_mm (opening between the
+        fingers in mm), force_n (finger forces in N).
+    """
+    return call("get_gripper_state", timeout=5.0)
+
 # ----------------------------------------- main
 def main() -> None:
     """Create the data directory and start the MCP server on stdio.
