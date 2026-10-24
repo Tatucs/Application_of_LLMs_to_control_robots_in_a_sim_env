@@ -9,8 +9,8 @@ EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/project
 WorldInfo {
 }
 Viewpoint {
-  orientation -0.2074843362504918 -0.13711804704803365 0.9685808646594387 4.28036902337318
-  position 1.7487212768210463 3.170881301141748 1.816634816304102
+  orientation -0.27307897996958563 -0.17463976086864058 0.9460067783174256 4.2297659441277675
+  position 2.077012488231623 3.574092711408512 2.9129985921726873
 }
 TexturedBackground {
 }
@@ -20,7 +20,7 @@ RectangleArena {
   floorSize 5 5
 }
 Panda {
-  controller "panda_control_test_1"
+  controller "panda_mcp_controller"
   supervisor TRUE
 }
 DEF CUBE SolidBox {
@@ -29,4 +29,23 @@ DEF CUBE SolidBox {
   physics Physics {
     mass 0.5
   }
+  recognitionColors [
+    1 0 0
+  ]
+}
+Robot {
+  translation 0.5 0 2
+  rotation 0 1 0 1.5708
+  children [
+    Camera {
+      name "overhead_camera"
+      width 640
+      height 480
+      recognition Recognition {
+        segmentation TRUE
+      }
+    }
+  ]
+  name "overhead_camera"
+  controller "camera_test"
 }
