@@ -10,6 +10,7 @@ import logging
 import os
 import sys
 import time
+import uuid
 from pathlib import Path
 
 from fastmcp import FastMCP
@@ -28,6 +29,11 @@ logger = logging.getLogger(__name__)
 DATA_DIR = Path(__file__).resolve().parents[2] / "data" / "panda"
 COMMANDS_FILE = DATA_DIR / "commands.json"
 STATUS_FILE = DATA_DIR / "status.json"
+
+# Time constants
+PICKUP_TIMEOUT = 2.0            # s wall time for the controller to accept a command
+HEARTBEAT_MAX_DELAY = 3.0       # s wall time; older heartbeat = sim paused or stopped
+POLL_PERIOD = 0.05              # s between status reads
 
 # Create MCP server
 mcp = FastMCP("Panda MCP Server")
@@ -78,6 +84,70 @@ def read_json(path: Path) -> dict | None:
     except (FileNotFoundError, PermissionError, json.JSONDecodeError):
         return None
 
+# ----------------------------------------- request
+def result_if_done(status: dict | None, cmd_id: str) -> dict | None:
+    """Check if the controller has finished a command.
+    
+    Args:
+        status: The current status of the controller.
+        cmd_id: The ID of the command to check.
+
+    Returns:
+        The result of the command if it's done, or None if it's not.
+    """
+    result = (status or {}).get("last_result") or {}
+    return result if result.get("id") == cmd_id else None
+
+def call(action: str, args: dict | None = None, timeout: float = 60.0) -> dict:
+    """Send one command to the controller and wait for its result.
+
+    Args:
+        action: Controller action name, e.g. "get_gripper_state".
+        args: Keyword arguments for the action.
+        timeout: Max wall-clock seconds to wait for the result once the
+            controller has accepted the command.
+
+    Returns:
+        The controller's result dict (ok, reason, detail, ...), or an error
+        dict with reason "busy", "timeout" or "error". Never raises.
+    """
+    # 1) check if the controller is running and not busy
+    status = read_json(STATUS_FILE)
+    if status is None:
+        return {"ok": False, "reason": "timeout", "detail": "no status.json, controller not running"}
+    if status.get("busy_with") is not None:
+        return {"ok": False, "reason": "busy", "detail": f"controller busy with {status['busy_with']}"}
+    beat = status.get("heartbeat") or {}
+    if time.time() - beat.get("wall_time", 0) > HEARTBEAT_MAX_DELAY:
+        return {"ok": False, "reason": "timeout", "detail": "simulation not running or paused"}
+
+    # 2) write the command to the commands.json file
+    cmd_id = uuid.uuid4().hex
+    try:
+        write_json(COMMANDS_FILE, {"id": cmd_id, "action": action, "args": args or {}})
+    except OSError as e:
+        return {"ok": False, "reason": "error", "detail": f"could not write command: {e}"}
+
+    # 3) wait until the controller accepted the command
+    deadline = time.time() + PICKUP_TIMEOUT
+    while True:
+        status = read_json(STATUS_FILE)
+        if result := result_if_done(status, cmd_id):
+            return result                                   # instant result (precheck)
+        if status and status.get("busy_with") == cmd_id:
+            break
+        if time.time() > deadline:
+            return {"ok": False, "reason": "timeout", "detail": "controller did not pick up the command"}
+        time.sleep(POLL_PERIOD)
+
+    # 4) wait for the result
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if result := result_if_done(read_json(STATUS_FILE), cmd_id):
+            return result
+        time.sleep(POLL_PERIOD)
+    return {"ok": False, "reason": "timeout",
+            "detail": f"no result within {timeout} s, state unknown, call get_gripper_state"}
 
 # ----------------------------------------- main
 def main() -> None:
