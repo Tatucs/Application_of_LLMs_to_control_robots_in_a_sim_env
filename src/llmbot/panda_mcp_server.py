@@ -16,20 +16,11 @@ from pathlib import Path
 
 from fastmcp import FastMCP
 
-# Configure logging
-logging.basicConfig(
-    stream=sys.stderr,
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    filemode='a',
-    encoding='utf-8'
-)
-logger = logging.getLogger(__name__)
-
 # Define paths for data exchange with the controller
 DATA_DIR = Path(__file__).resolve().parents[2] / "data" / "panda"
 COMMANDS_FILE = DATA_DIR / "commands.json"
 STATUS_FILE = DATA_DIR / "status.json"
+LOG_FILE = DATA_DIR / "server.log"
 
 # Time constants
 PICKUP_TIMEOUT = 2.0            # s wall time for the controller to accept a command
@@ -39,6 +30,17 @@ POLL_PERIOD = 0.05              # s between status reads
 # Keys the model sees; everything else is controller-side debug
 KEEP = {"ok", "reason", "detail", "stage", "holding", "width_mm", "dropped",
         "objects", "object_id", "x", "y", "z", "yaw"}
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,             # change to DEBUG for more detail
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stderr),
+        logging.FileHandler(LOG_FILE, encoding="utf-8", delay=True),
+    ],
+)
+logger = logging.getLogger(__name__)
 
 # Create MCP server
 mcp = FastMCP("Panda MCP Server")
@@ -103,7 +105,7 @@ def result_if_done(status: dict | None, cmd_id: str) -> dict | None:
     result = (status or {}).get("last_result") or {}
     return result if result.get("id") == cmd_id else None
 
-def call(action: str, args: dict | None = None, timeout: float = 60.0) -> dict:
+def run_command(action: str, args: dict | None = None, timeout: float = 60.0) -> dict:
     """Send one command to the controller and wait for its result.
 
     Args:
@@ -119,9 +121,11 @@ def call(action: str, args: dict | None = None, timeout: float = 60.0) -> dict:
     # 1) check if the controller is running and not busy
     status = read_json(STATUS_FILE)
     if status is None:
-        return {"ok": False, "reason": "timeout", "detail": "no status.json, controller not running"}
+        return {"ok": False, "reason": "timeout",
+                "detail": "no status.json, controller not running"}
     if status.get("busy_with") is not None:
-        return {"ok": False, "reason": "busy", "detail": f"controller busy with {status['busy_with']}"}
+        return {"ok": False, "reason": "busy",
+                "detail": f"controller busy with {status['busy_with']}"}
     beat = status.get("heartbeat") or {}
     if time.time() - beat.get("wall_time", 0) > HEARTBEAT_MAX_DELAY:
         return {"ok": False, "reason": "timeout", "detail": "simulation not running or paused"}
@@ -142,7 +146,8 @@ def call(action: str, args: dict | None = None, timeout: float = 60.0) -> dict:
         if status and status.get("busy_with") == cmd_id:
             break
         if time.time() > deadline:
-            return {"ok": False, "reason": "timeout", "detail": "controller did not pick up the command"}
+            return {"ok": False, "reason": "timeout",
+                    "detail": "controller did not pick up the command"}
         time.sleep(POLL_PERIOD)
 
     # 4) wait for the result
@@ -153,6 +158,26 @@ def call(action: str, args: dict | None = None, timeout: float = 60.0) -> dict:
         time.sleep(POLL_PERIOD)
     return {"ok": False, "reason": "timeout",
             "detail": f"no result within {timeout} s, state unknown, call get_gripper_state"}
+
+def call(action: str, args: dict | None = None, timeout: float = 60.0) -> dict:
+    """Call a controller action and return its result. Also logs every call with its result.
+
+    Args:
+        action: Controller action name, e.g. "get_gripper_state".
+        args: Keyword arguments for the action.
+        timeout: Max wall-clock seconds to wait for the result once the
+            controller has accepted the command.
+
+    Returns:
+        The controller's result dict (ok, reason, detail, ...), or an error
+        dict with reason "busy", "timeout" or "error". Never raises.
+    """
+    start = time.monotonic()
+    result = run_command(action, args=args, timeout=timeout)
+    span = time.monotonic() - start
+    logger.info(f"{action} {args or {}} -> {result.get('reason')} ({span:.3f} s)")
+    logger.debug(f"{action} {args or {}} -> {result}")
+    return result
 
 # ----------------------------------------- MCP helpers
 def clean(value):
@@ -295,8 +320,8 @@ def main() -> None:
 
     Blocks until the client closes the connection.
     """
-    logger.info(f"Data directory: {DATA_DIR}")
     DATA_DIR.mkdir(parents=True, exist_ok=True)
+    logger.info(f"Data directory: {DATA_DIR}")
     logger.info("Starting Panda MCP Server...")
     mcp.run()
 
