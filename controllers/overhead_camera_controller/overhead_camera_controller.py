@@ -1,4 +1,4 @@
-"""camera_test controller.
+"""overhead_camera controller.
 
 A plain Robot that owns one overhead Camera with Recognition. Once per
 SAVE_PERIOD of sim time it writes into <repo>/data/camera/:
@@ -23,7 +23,7 @@ CAM_POS = (0.5, 0.0, 2)                  # Robot translation in the .wbt, in met
 # Robot rotation in the .wbt (axis, angle): turns the camera view axis +x to world -z
 CAM_ROT = (0.0, 1.0, 0.0, math.pi / 2)
 CAMERA_STEPS = 4                           # camera + recognition sampled every this many time steps
-SAVE_PERIOD = 1.0                          # s sim time between saved frames
+SAVE_PERIOD = 0.25                         # s sim time between saved frames
 JPEG_QUALITY = 90
 
 # ---------------------------------------------------------------- Setup
@@ -78,6 +78,8 @@ def save_image(save, path):
 def axis_angle_to_matrix(x, y, z, angle):
     """3x3 rotation matrix (list of rows) from a Webots rotation field (Rodrigues formula)."""
     n = math.sqrt(x * x + y * y + z * z)
+    if n < 1e-9:                                        # no rotation, return identity
+        return [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
     x, y, z = x / n, y / n, z / n
     c, s = math.cos(angle), math.sin(angle)
     t = 1 - c
@@ -87,9 +89,13 @@ def axis_angle_to_matrix(x, y, z, angle):
 
 CAM_R = axis_angle_to_matrix(*CAM_ROT)
 
-def camera_to_world(p_cam):
+def camera_position_to_world(p_cam):
     """World-frame point from a camera-frame point (x = view direction, y left, z up)."""
     return [CAM_POS[i] + sum(CAM_R[i][j] * p_cam[j] for j in range(3)) for i in range(3)]
+
+def camera_rotation_to_world(R_cam):
+    """World-frame rotation matrix from a camera-frame rotation matrix."""
+    return [[sum(CAM_R[i][k] * R_cam[k][j] for k in range(3)) for j in range(3)] for i in range(3)]
 
 # ---------------------------------------------------------------- Recognition
 
@@ -97,14 +103,19 @@ def recognised_objects():
     """Every object the camera recognises right now, as JSON-ready dicts."""
     objects = []
     for obj in camera.getRecognitionObjects():
-        p_cam = list(obj.getPosition())
-        colours = obj.getColors()            # flat r, g, b, r, g, b, ...
+        p_cam = list(obj.getPosition())                        # object position, camera frame
+        p_world = camera_position_to_world(p_cam)              # object position, world frame
+        R_obj = axis_angle_to_matrix(*obj.getOrientation())    # object rotation, camera frame
+        R_world = camera_rotation_to_world(R_obj)              # object rotation, world frame
+        yaw_world = math.atan2(R_world[1][0], R_world[0][0])   # object yaw, world frame
+        colours = obj.getColors()                              # flat r, g, b, r, g, b, ...
         objects.append({
             "id": obj.getId(),               # Webots node id, not the DEF name
             "model": obj.getModel(),
             "colours": [round(colours[i], 3) for i in range(3 * obj.getNumberOfColors())],
             "position_camera": [round(v, 4) for v in p_cam],
-            "position_world": [round(v, 4) for v in camera_to_world(p_cam)],
+            "position_world": [round(v, 4) for v in p_world],
+            "yaw_world": round(yaw_world, 4),
             "size": [round(v, 4) for v in obj.getSize()],
             "position_on_image": list(obj.getPositionOnImage()),   # bbox centre, pixels
             "size_on_image": list(obj.getSizeOnImage()),           # bbox width, height, pixels
@@ -120,8 +131,10 @@ def save_frame():
         if camera.isRecognitionSegmentationEnabled():
             save_image(camera.saveRecognitionSegmentationImage, DATA_DIR / "segmentation.png")
     write_json(DATA_DIR / "recognition.json",
-               {"time": round(robot.getTime(), 3), "objects": objects})
-    summary = "; ".join(f"{o['colours'][:3]} @ {o['position_world']}" for o in objects) or "nothing"
+               {"time": round(robot.getTime(), 3),
+                "wall_time": time.time(),
+                "objects": objects})
+    summary = "; ".join(f"{o['colours'][:3]} @ {o['position_world']} @ {o['yaw_world']}" for o in objects) or "nothing"
     print(f"[{robot.getTime():6.2f} s] {len(objects)} object(s): {summary}")
 
 # ---------------------------------------------------------------- Main loop

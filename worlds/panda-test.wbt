@@ -47,5 +47,5 @@ Robot {
     }
   ]
   name "overhead_camera"
-  controller "camera_test"
+  controller "overhead_camera_controller"
 }
