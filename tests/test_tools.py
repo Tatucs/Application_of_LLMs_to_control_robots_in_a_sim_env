@@ -4,7 +4,10 @@ Unit tests for the helpers run anywhere. The end-to-end tests drive the real
 arm through an MCP stdio client and are skipped unless Webots is running.
 """
 import asyncio
+import base64
+import json
 import math
+import os
 import time
 from pathlib import Path
 
@@ -15,7 +18,8 @@ from fastmcp.exceptions import ToolError
 from llmbot import panda_mcp_server as server
 
 SERVER = Path(__file__).resolve().parents[1] / "src" / "llmbot" / "panda_mcp_server.py"
-TOOLS = {"get_gripper_state", "get_objects", "get_target_position", "pick", "place", "go_home"}
+TOOLS = {"get_gripper_state", "get_objects", "get_target_position", "pick", "place", "go_home",
+         "get_camera_image"}
 FORBIDDEN = {"id", "left_mm", "right_mm", "force_n", "target", "reached", "pos_err_mm"}
 
 
@@ -102,6 +106,97 @@ def test_busy_controller_is_busy(fake_link):
     assert not server.COMMANDS_FILE.exists(), "no command may be sent while busy"
 
 
+# ----------------------------------------- camera layer, fake recognition.json, no Webots
+RED_CUBE = {"id": 370, "colours": [1.0, 0.0, 0.0],
+            "position_world": [0.4588, -0.586, 0.0198], "yaw_world": -0.0}
+
+
+@pytest.fixture
+def fake_camera(tmp_path, monkeypatch):
+    """Point the server at a temp dir, so a test can write recognition.json and image.jpg itself."""
+    monkeypatch.setattr(server, "RECOGNITION_FILE", tmp_path / "recognition.json")
+    monkeypatch.setattr(server, "IMAGE_FILE", tmp_path / "image.jpg")
+    return tmp_path
+
+
+def write_frame(objects: list, age: float = 0.0) -> None:
+    """Write a camera frame taken age seconds ago (wall time)."""
+    server.write_json(server.RECOGNITION_FILE,
+                      {"time": 1.0, "wall_time": time.time() - age, "objects": objects})
+
+
+@pytest.mark.parametrize("rgb, word", [([1, 0, 0], "red"), ([0.9, 0.1, 0.1], "red"),
+                                       ([1, 1, 0.2], "yellow"), ([], "unknown")])
+def test_colour_word_nearest(rgb, word):
+    assert server.colour_word(rgb) == word
+
+
+def test_no_recognition_file_is_timeout(fake_camera):
+    start = time.monotonic()
+    r = server.get_objects()
+    assert r["reason"] == "timeout" and "not running" in r["detail"]
+    assert time.monotonic() - start < 1.0
+
+
+def test_stale_frame_is_timeout(fake_camera):
+    # plan test 9: a paused sim or a dead camera stops new frames
+    write_frame([RED_CUBE], age=2 * server.FRAME_MAX_AGE)
+    for r in (server.get_objects(), server.get_target_position("obj_370")):
+        assert r["reason"] == "timeout" and "paused" in r["detail"]
+
+
+def test_get_objects_from_frame(fake_camera):
+    write_frame([RED_CUBE, {**RED_CUBE, "id": 371, "colours": []}])
+    r = server.get_objects()
+    check_clean(r)
+    assert r == {"ok": True, "reason": "ok",
+                 "objects": [{"id": "obj_370", "colour": "red"},
+                             {"id": "obj_371", "colour": "unknown"}]}
+
+
+def test_get_objects_empty_scene(fake_camera):
+    write_frame([])
+    assert server.get_objects() == {"ok": True, "reason": "ok", "objects": []}
+
+
+def test_get_target_position_from_frame(fake_camera):
+    write_frame([RED_CUBE])
+    r = server.get_target_position(" obj_370 ")
+    check_clean(r)                                   # yaw -0.0 must come out as 0.0
+    assert r == {"ok": True, "reason": "ok", "object_id": "obj_370",
+                 "x": 0.459, "y": -0.586, "z": 0.02, "yaw": 0.0}
+
+
+def test_get_target_position_not_visible(fake_camera):
+    # an id from an earlier get_objects whose object is now hidden
+    write_frame([RED_CUBE])
+    r = server.get_target_position("obj_999")
+    assert r["reason"] == "not_found" and "obj_999" in r["detail"]
+
+
+JPEG = b"\xff\xd8\xff\xe0fake jpeg\xff\xd9"
+
+
+def test_camera_image_returns_dict_and_image(fake_camera):
+    server.IMAGE_FILE.write_bytes(JPEG)
+    status, image = server.get_camera_image()
+    assert status == {"ok": True, "reason": "ok"}
+    assert image.data == JPEG
+
+
+def test_no_image_file_is_timeout(fake_camera):
+    r = server.get_camera_image()
+    assert len(r) == 1 and r[0]["reason"] == "timeout" and "not running" in r[0]["detail"]
+
+
+def test_stale_image_is_timeout(fake_camera):
+    server.IMAGE_FILE.write_bytes(JPEG)
+    old = time.time() - 2 * server.FRAME_MAX_AGE
+    os.utime(server.IMAGE_FILE, (old, old))
+    r = server.get_camera_image()
+    assert len(r) == 1 and r[0]["reason"] == "timeout" and "paused" in r[0]["detail"]
+
+
 # ----------------------------------------- end-to-end, needs Webots
 @pytest.fixture
 async def client():
@@ -139,6 +234,35 @@ async def test_every_object_has_a_position(client):
     for o in objs["objects"]:
         p = await tool(client, "get_target_position", {"object_id": o["id"]})
         assert p["ok"] and p["object_id"] == o["id"], p
+
+
+@needs_sim
+async def test_camera_matches_supervisor(client):
+    """Plan test 3: every L1 (camera) position within 5 mm and yaw within 0.01 rad
+    of the L0 (Supervisor) ground truth, which the controller still answers."""
+    truth = server.run_command("get_objects", timeout=5.0)
+    assert truth["ok"], truth
+    l0 = [server.run_command("get_target_position", {"object_id": o["id"]}, timeout=5.0)
+          for o in truth["objects"]]
+    objs = await tool(client, "get_objects")
+    assert len(objs["objects"]) == len(l0), "camera and Supervisor see a different number of objects"
+    for o in objs["objects"]:
+        p = await tool(client, "get_target_position", {"object_id": o["id"]})
+        nearest = min(l0, key=lambda q: math.dist((p["x"], p["y"], p["z"]), (q["x"], q["y"], q["z"])))
+        err = math.dist((p["x"], p["y"], p["z"]), (nearest["x"], nearest["y"], nearest["z"]))
+        assert err < 0.005, f"{o['id']} is {err * 1000:.1f} mm from {nearest['object_id']}"
+        dyaw = (p["yaw"] - nearest["yaw"] + math.pi / 4) % (math.pi / 2) - math.pi / 4
+        assert abs(dyaw) < 0.01, f"{o['id']} yaw off by {dyaw:.3f} rad (mod 90 deg, cube symmetry)"
+
+
+@needs_sim
+async def test_camera_image_over_mcp(client):
+    """The client gets two blocks: the status as JSON text, then a real JPEG."""
+    r = await client.call_tool("get_camera_image", {})
+    text, image = r.content
+    assert json.loads(text.text) == {"ok": True, "reason": "ok"}
+    assert image.mime_type == "image/jpeg"
+    assert base64.b64decode(image.data)[:2] == b"\xff\xd8"   # JPEG start-of-image marker
 
 
 @needs_sim
