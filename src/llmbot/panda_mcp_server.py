@@ -18,18 +18,25 @@ from fastmcp import FastMCP
 
 # Define paths for data exchange with the controller
 DATA_DIR = Path(__file__).resolve().parents[2] / "data" / "panda"
+CAMERA_DIR = Path(__file__).resolve().parents[2] / "data" / "camera"
 COMMANDS_FILE = DATA_DIR / "commands.json"
 STATUS_FILE = DATA_DIR / "status.json"
 LOG_FILE = DATA_DIR / "server.log"
+RECOGNITION_FILE = CAMERA_DIR / "recognition.json"
 
 # Time constants
 PICKUP_TIMEOUT = 2.0            # s wall time for the controller to accept a command
 HEARTBEAT_MAX_DELAY = 3.0       # s wall time; older heartbeat = sim paused or stopped
 POLL_PERIOD = 0.05              # s between status reads
+FRAME_MAX_AGE = 3.0             # s wall time; older camera frame = camera dead or sim paused
 
 # Keys the model sees; everything else is controller-side debug
 KEEP = {"ok", "reason", "detail", "stage", "holding", "width_mm", "dropped",
         "objects", "object_id", "x", "y", "z", "yaw"}
+
+# Colour words for recognitionColors
+COLOURS = {"red": (1, 0, 0), "green": (0, 1, 0), "blue": (0, 0, 1),
+           "yellow": (1, 1, 0), "white": (1, 1, 1)}
 
 # Configure logging
 logging.basicConfig(
@@ -179,6 +186,39 @@ def call(action: str, args: dict | None = None, timeout: float = 60.0) -> dict:
     logger.debug(f"{action} {args or {}} -> {result}")
     return result
 
+# ----------------------------------------- camera
+def read_frame() -> dict:
+    """Read the latest camera frame from recognition.json without raising.
+    
+    Returns:
+        ok, reason, objects (raw Recognition dicts), or an error dict.
+    """
+    retry = 0
+    while retry < 5:
+        frame = read_json(RECOGNITION_FILE)
+        if frame is not None:
+            frame_time = frame.get("wall_time", 0)
+            if time.time() - frame_time > FRAME_MAX_AGE:
+                return {"ok": False, "reason": "timeout",
+                        "detail": "camera not running or simulation paused"}
+            return {"ok": True, "reason": "ok", "objects": frame.get("objects", [])}
+        retry += 1
+        time.sleep(POLL_PERIOD)
+    return {"ok": False, "reason": "timeout", "detail": "no recognition.json, camera not running"}
+
+def colour_word(rgb: list[float]) -> str:
+    """Return a colour word for a given RGB triple, or "unknown" if rgb is empty.
+
+    Args:
+        rgb: List of 3 floats in [0, 1].
+
+    Returns:
+        A colour word like "red", "green", "blue", "yellow", "white", or "unknown".
+    """
+    if len(rgb) < 3:
+        return "unknown"
+    return min(COLOURS, key=lambda c: math.dist(rgb[:3], COLOURS[c]))
+
 # ----------------------------------------- MCP helpers
 def clean(value):
     """Round floats to 3 decimals and turn -0.0 into 0.0.
@@ -241,26 +281,51 @@ def get_objects() -> dict:
     """List all graspable objects in the scene.
 
     Call this first: the ids are needed by get_target_position.
+    If an object is not visible to the camera (e.g., it's under the arm), it will not be included in the list.
 
     Returns:
         ok, reason, objects (list of dicts with id, colour).
     """
-    return trim(call("get_objects", timeout=5.0))
+    start = time.monotonic()
+    frame = read_frame()
+    span = time.monotonic() - start
+    logger.info(f"get_objects -> {frame.get('reason')} ({span:.3f} s)")
+    logger.debug(f"get_objects -> {frame}")
+    if not frame["ok"]:
+        return trim(frame)
+    objects = [{"id": f"obj_{o['id']}", "colour": colour_word(o.get("colours", []))}
+               for o in frame["objects"]]
+    return trim({"ok": True, "reason": "ok", "objects": objects})
 
 @mcp.tool()
 def get_target_position(object_id: str) -> dict:
     """Get the centre and rotation of one object, ready to pass to pick.
 
     Args:
-        object_id: An id from get_objects, e.g. "cube_red".
+        object_id: An id from get_objects, e.g. "obj_412".
 
     Returns:
         ok, reason, object_id, x, y, z (metres, world frame), yaw (rad).
-        reason "not_found" if the id does not exist.
+        reason "not_found" if the id does not exist or the camera does not see it.
     """
-    if not object_id.strip():
+    object_id = object_id.strip()
+    if not object_id:
         return {"ok": False, "reason": "error", "detail": "object_id is empty"}
-    return trim(call("get_target_position", args={"object_id": object_id}, timeout=5.0))
+    start = time.monotonic()
+    frame = read_frame()
+    span = time.monotonic() - start
+    logger.info(f"get_target_position -> {frame.get('reason')} ({span:.3f} s)")
+    logger.debug(f"get_target_position -> {frame}")
+    if not frame["ok"]:
+        return frame
+    for o in frame["objects"]:
+        if f"obj_{o['id']}" == object_id:
+            x, y, z = o["position_world"]
+            return trim({"ok": True, "reason": "ok", "object_id": object_id,
+                         "x": x, "y": y, "z": z, "yaw": o["yaw_world"]})
+    return {"ok": False, "reason": "not_found",
+            "detail": f"camera does not see {object_id!r}, call get_objects for the ids"}
+
 
 @mcp.tool()
 def pick(x: float, y: float, z: float, yaw: float = 0.0) -> dict:
