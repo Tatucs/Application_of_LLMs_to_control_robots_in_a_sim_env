@@ -3,6 +3,8 @@ MCP server for controlling the Panda robot in Webots.
 
 This server works in conjunction with the Webots controller (panda_mcp_controller.py)
 via the file system (commands.json / status.json) to exchange commands and status.
+Perception (get_objects, get_target_position, get_camera_image) reads the overhead
+camera's data/camera/ files directly, without the Panda controller.
 '''
 
 import json
@@ -15,6 +17,7 @@ import uuid
 from pathlib import Path
 
 from fastmcp import FastMCP
+from fastmcp.utilities.types import Image
 
 # Define paths for data exchange with the controller
 DATA_DIR = Path(__file__).resolve().parents[2] / "data" / "panda"
@@ -23,6 +26,7 @@ COMMANDS_FILE = DATA_DIR / "commands.json"
 STATUS_FILE = DATA_DIR / "status.json"
 LOG_FILE = DATA_DIR / "server.log"
 RECOGNITION_FILE = CAMERA_DIR / "recognition.json"
+IMAGE_FILE = CAMERA_DIR / "image.jpg"
 
 # Time constants
 PICKUP_TIMEOUT = 2.0            # s wall time for the controller to accept a command
@@ -206,6 +210,27 @@ def read_frame() -> dict:
         time.sleep(POLL_PERIOD)
     return {"ok": False, "reason": "timeout", "detail": "no recognition.json, camera not running"}
 
+def read_image() -> dict:
+    """Read the latest camera image from image.jpg without raising.
+
+    The camera swaps each image in with os.replace, so the file's mtime is
+    the time the frame was written.
+
+    Returns:
+        ok, reason, data (JPEG bytes), or an error dict with reason "timeout".
+    """
+    for _ in range(5):
+        try:
+            if time.time() - IMAGE_FILE.stat().st_mtime > FRAME_MAX_AGE:
+                return {"ok": False, "reason": "timeout",
+                        "detail": "camera not running or simulation paused"}
+            return {"ok": True, "reason": "ok", "data": IMAGE_FILE.read_bytes()}
+        except FileNotFoundError:
+            break
+        except PermissionError:          # Windows: camera is swapping the file in right now
+            time.sleep(POLL_PERIOD)
+    return {"ok": False, "reason": "timeout", "detail": "no image.jpg, camera not running"}
+
 def colour_word(rgb: list[float]) -> str:
     """Return a colour word for a given RGB triple, or "unknown" if rgb is empty.
 
@@ -326,6 +351,24 @@ def get_target_position(object_id: str) -> dict:
     return {"ok": False, "reason": "not_found",
             "detail": f"camera does not see {object_id!r}, call get_objects for the ids"}
 
+@mcp.tool()
+def get_camera_image() -> list:
+    """Top-down photo of the workspace from the fixed overhead camera.
+
+    Use to judge the scene: what is where, whether something is in the way,
+    whether a pick or place worked. For exact positions use get_target_position.
+    Image top = world +x (away from the robot base), image left = world +y.
+
+    Returns:
+        [ok/reason dict, JPEG image], or [error dict] with reason "timeout".
+    """
+    start = time.monotonic()
+    image = read_image()
+    span = time.monotonic() - start
+    logger.info(f"get_camera_image -> {image['reason']} ({span:.3f} s)")
+    if not image["ok"]:
+        return [image]
+    return [{"ok": True, "reason": "ok"}, Image(data=image["data"], format="jpeg")]
 
 @mcp.tool()
 def pick(x: float, y: float, z: float, yaw: float = 0.0) -> dict:
