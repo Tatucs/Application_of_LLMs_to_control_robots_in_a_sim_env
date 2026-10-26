@@ -1,7 +1,8 @@
-# Define sizes
-#sizes = [0.065+(rng.random()/50-0.01),0.044+(rng.random()/50-0.01), 0.024+(rng.random()/50-0.01)]
+''' Supervisor controller
 
-# Supervisor controller
+Supervisor, which spawns 3 different sized blue cubes randomly within a 0.5x0.5 m wide square. It monitors which cubes are in the basket, and it checks if they are on top of eachother in the proper, decreasing size order. If all conditions are met it respawns the cubes up to MAX_ROUNDS times.
+
+'''
 # Imports
 import numpy as np
 from controller import Supervisor
