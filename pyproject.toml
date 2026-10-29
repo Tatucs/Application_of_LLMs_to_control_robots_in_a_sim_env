@@ -15,6 +15,7 @@ dependencies = [
     "google-genai",
     "httpx",
     "python-dotenv",
+    "ikpy"
 ]
 
 [project.optional-dependencies]
