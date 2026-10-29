@@ -1,0 +1,68 @@
+#VRML_SIM R2025a utf8
+
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/robots/franka_emika/panda/protos/Panda.proto"
+IMPORTABLE EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/cabinet/protos/Cabinet.proto"
+
+WorldInfo {
+}
+Viewpoint {
+  orientation -0.031463340809322414 0.9958040106954676 0.08593270895262965 0.7047690062595716
+  position -2.3581690936100395 -0.5199465089168426 2.627643831091104
+}
+Background {
+  skyColor [
+    0.4 0.7 1
+  ]
+}
+DirectionalLight {
+  ambientIntensity 1
+  direction 0.1 -0.5 0.3
+}
+Solid {
+  children [
+    Shape {
+      appearance PBRAppearance {
+        baseColor 0.992157 0.921569 0.619608
+        roughness 1
+        metalness 0
+        emissiveColor 0.992157 0.921569 0.619608
+      }
+      geometry Plane {
+        size 5 5
+      }
+    }
+  ]
+  name "Floor"
+  boundingObject Plane {
+    size 5 5
+  }
+  locked TRUE
+}
+Panda {
+  controller "<none>"
+}
+Solid {
+  translation 0.26 -0.55 0.001
+  children [
+    Shape {
+      appearance PBRAppearance {
+        baseColor 0.439216 0.258824 0.0784314
+        roughness 1
+        metalness 0
+        emissiveColor 0.439216 0.258824 0.0784314
+      }
+      geometry Plane {
+        size 0.4 0.4
+      }
+    }
+  ]
+  name "basket"
+  boundingObject Plane {
+    size 0.4 0.4
+  }
+}
+Robot {
+  name "Supervisor"
+  controller "supervisor_controller_articulate"
+  supervisor TRUE
+}
