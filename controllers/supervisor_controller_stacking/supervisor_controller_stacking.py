@@ -18,9 +18,6 @@ SPAWN_Y_RANGE = (0.05, 0.55)      # Reasonably large arbitrary range
 SIZE_RANGE_BIG = (0.06,0.075)     # big cube size range
 SIZE_RANGE_MEDIUM = (0.035,0.05)  # medium cube size range
 SIZE_RANGE_SMALL = (0.015,0.025)   # small cube size range
-#SIZE_BIG = 0.07
-#SIZE_MEDIUM = 0.045
-#SIZE_SMALL = 0.02
 
 # ============================== INITIALIZATION ============================
 # set random seed
@@ -35,7 +32,6 @@ children_field = root_node.getField('children')
 # Get basket node
 basket_node = supervisor.getFromDef("BASKET")
 basket_sx, basket_sy = 0.4, 0.4
-#basket_sx, basket_sy = supervisor.getPosition(basket_node)[0], supervisor.getPosition(basket_node)[1]
 
 class SimEnded(Exception):
     """Raised when Webots stops the simulation (step returns -1)."""
