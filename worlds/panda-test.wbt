@@ -9,8 +9,8 @@ EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/project
 WorldInfo {
 }
 Viewpoint {
-  orientation -0.2074843362504918 -0.13711804704803365 0.9685808646594387 4.28036902337318
-  position 1.760098625344451 3.197579716863221 1.8296664317238311
+  orientation -0.27307897996958563 -0.17463976086864058 0.9460067783174256 4.2297659441277675
+  position 2.077012488231623 3.574092711408512 2.9129985921726873
 }
 TexturedBackground {
 }
@@ -20,51 +20,32 @@ RectangleArena {
   floorSize 5 5
 }
 Panda {
-  controller "panda_control_test_2"
+  controller "panda_mcp_controller"
   supervisor TRUE
 }
 DEF CUBE SolidBox {
-  translation 0.5 4.3910300743271e-18 0.019803993074903006
-  rotation 0.945494229097269 0.3151647430324257 -0.08192586583653681 1.6908840966556069e-16
+  translation 0.5 0.5 0.02
   size 0.04 0.04 0.04
   physics Physics {
-    density -1
     mass 0.5
   }
+  recognitionColors [
+    1 0 0
+  ]
 }
-DEF TARGET Solid {
-  translation 0.59 0 0.28
+Robot {
+  translation 0.5 0 2
+  rotation 0 1 0 1.5708
   children [
-    Shape {
-      appearance PBRAppearance {
-        baseColorMap ImageTexture {
-          url [
-            "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/robots/abb/irb/worlds/textures/target.png"
-          ]
-        }
-        roughnessMap ImageTexture {
-          url [
-            "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/robots/abb/irb/worlds/textures/target.png"
-          ]
-        }
-        metalnessMap ImageTexture {
-          url [
-            "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/robots/abb/irb/worlds/textures/target.png"
-          ]
-        }
-        emissiveColorMap ImageTexture {
-          url [
-            "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/robots/abb/irb/worlds/textures/target.png"
-          ]
-        }
-        textureTransform TextureTransform {
-          scale 2 1
-        }
-      }
-      geometry Sphere {
-        radius 0.06
-        subdivision 2
+    Camera {
+      name "overhead_camera"
+      width 640
+      height 480
+      recognition Recognition {
+        segmentation TRUE
       }
     }
   ]
+  name "overhead_camera"
+  controller "overhead_camera_controller"
 }
