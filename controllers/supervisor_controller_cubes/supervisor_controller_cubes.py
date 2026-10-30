@@ -1,4 +1,8 @@
-# Supervisor controller
+''' Supervisor controller
+
+Supervisor, which spawns 5 different coloured cubes of size 0.04 randomly within a 0.5x0.5 m wide square. It monitors which cubes are in the basket, and it checks if they are actually in the basket, not mid air, or rolling. If all conditions are met it respawns the cubes up to MAX_ROUNDS times.
+
+'''
 # Imports
 import numpy as np
 from controller import Supervisor
@@ -10,7 +14,6 @@ MAX_ROUNDS = 5                    # total cube sets
 ROUND_TIMEOUT = 300.0             # [s] sim time before a round is declared failed
 # cube
 COLORS = [[0,0, 0.498039],[0.666667, 0, 0],[0, 0.333333, 0],[1, 0.333333, 1],[1, 1, 0]]     # Blue, Red, Green, Pink, Yellow
-CUBE_SIZE = 0.04                  # CUBE_EDGE_LENGTH [m]
 CUBE_Z = 0.03                    # spawn height of the cube centre (greater than CUBE_SIZE/2 to avoid collision with the floor)
 SPAWN_X_RANGE = (0.20, 0.70)      # Reasonably large arbitrary range       
 SPAWN_Y_RANGE = (0.05, 0.55)      # Reasonably large arbitrary range
@@ -28,7 +31,6 @@ children_field = root_node.getField('children')
 # Get basket node
 basket_node = supervisor.getFromDef("BASKET")
 basket_sx, basket_sy = 0.4, 0.4
-#basket_sx, basket_sy = supervisor.getPosition(basket_node)[0], supervisor.getPosition(basket_node)[1]
 
 class SimEnded(Exception):
     """Raised when Webots stops the simulation (step returns -1)."""
@@ -65,8 +67,12 @@ def spawn_cubes():
         p = sample_position()
         positions.append(p)
         c = COLORS[i % len(COLORS)]
-        node_str = (f'DEF CUBE_{i} cube {{ translation {p[0]} {p[1]} {p[2]} '
-                    f'color {c[0]} {c[1]} {c[2]} name "cube_{i}" }}')
+        node_str = (
+            f'DEF CUBE_{i} cube {{'
+            f'translation {p[0]} {p[1]} {p[2]} '
+            f'color {c[0]} {c[1]} {c[2]} '
+            f'recognitionColors [{c[0]} {c[1]} {c[2]}] '
+            f'name "CUBE_{i}" }}')
         children_field.importMFNodeFromString(-1, node_str)
         nodes.append(supervisor.getFromDef(f"CUBE_{i}"))
     return nodes, positions
@@ -103,7 +109,7 @@ try:
             for i, s in enumerate(st):
                 if s["in_basket"]:
                     if placed[i] == 0:
-                        print(f"Cube_{i} is in the basket.")
+                        print(f"cube_{i} is in the basket.")
                     placed[i] = placed[i] + 1
                     
             if all(placed):

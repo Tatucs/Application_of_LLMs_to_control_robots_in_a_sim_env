@@ -4,6 +4,7 @@ PROTO CUBE [
   field SFVec3f    translation 0.55 0.3 0.02
   field SFRotation rotation    0 0 1 0
   field SFColor    color       0 0 0.498039
+  field MFColor    recognitionColors [0 0 0.498039]
   field SFString   name        "cube"
   field SFVec3f	   size        0.04 0.04 0.04
 ]
@@ -12,6 +13,7 @@ PROTO CUBE [
     translation IS translation
     rotation IS rotation
     name IS name
+    recognitionColors IS recognitionColors
     children [
       Shape {
 		  appearance PBRAppearance {
