@@ -28,9 +28,11 @@ APPROACH_HEIGHT = 0.10      # TCP clearance above the object before descending /
 RELEASE_HEIGHT = 0.005      # place releases this far above the target, so the object is not pressed into the table
 
 HEARTBEAT_PERIOD = 0.5      # s sim time between idle status writes
-OBJECT_PREFIX = "CUBE"      # DEF prefix of graspable objects
-COLOURS = {"red": (1, 0, 0), "green": (0, 1, 0), "blue": (0, 0, 1),
-           "yellow": (1, 1, 0), "white": (1, 1, 1)}
+OBJECT_PREFIXES = ["CUBE","BASKET"]      # DEF prefix of graspable objects 
+COLOURS = {"red": (0.666667, 0, 0), "green": (0, 0.333333, 0), "blue": (0,0, 0.498039),
+           "yellow": (1, 1, 0), "pink": (1, 0.333333, 1), "brown": (0.439216,0.258824,0.0784314)}
+OBJECT_KINDS ={"cube":"graspable", "basket":"area"}
+CUBE_SIZE=0.04
 
 # ---------------------------------------------------------------- Setup
 
@@ -280,7 +282,8 @@ def open_gripper(timeout=GRIPPER_TIMEOUT):
 def pick(xyz, yaw=0.0):
     """Grasp the object whose centre is at xyz (x, y, z in metres, world frame),
     gripper rotated by yaw (rad). A failure after the approach leaves the arm
-    above xyz with the gripper open. Returns a result dict; stage = where it stopped."""
+    above xyz with the gripper open. Returns a result dict; stage = where it stopped.
+    """
     xyz = np.array(xyz)
     above = xyz + [0, 0, APPROACH_HEIGHT]
 
@@ -375,30 +378,30 @@ def go_home():
 
 # ---------------------------------------------------------------- Perception tools
 
-def scene_nodes(prefix):
+def scene_nodes(prefix:list[str]):
     """Top-level scene nodes whose DEF starts with prefix."""
     children = robot.getRoot().getField("children")
     nodes = (children.getMFNode(i) for i in range(children.getCount()))
-    return [n for n in nodes if n.getDef().startswith(prefix)]
+    return [n for n in nodes if n.getDef().startswith(tuple(prefix))]
 
 def node_colour(node):
-    """Nearest colour word to the node's appearance baseColor
+    """Nearest colour word to the node's PRBAppearance baseColor
     (until camera recognitionColors)."""
     try:
-        rgb = np.array(node.getField("appearance").getSFNode().getField("baseColor").getSFColor())
+        rgb = np.array(node.getField("PBRAppearance").getSFNode().getField("baseColor").getSFColor())
     except AttributeError:      # getField / getSFNode returned None: no appearance or no baseColor
         return "unknown"
     return min(COLOURS, key=lambda c: np.linalg.norm(rgb - np.array(COLOURS[c])))
 
 def get_objects():
-    """All graspable objects: id + colour."""
-    objects = [{"id": n.getDef().lower(), "colour": node_colour(n)} for n in scene_nodes(OBJECT_PREFIX)]
+    """All graspable and non graspable objects: id + kind + colour."""
+    objects = [{"id": n.getDef().lower(), "kind": OBJECT_KINDS.get(n.getField("model").getSFString(),"unknown"), "colour": node_colour(n)} for n in scene_nodes(OBJECT_PREFIXES)]
     return {"ok": True, "reason": "ok", "objects": objects}
 
 def get_target_position(object_id):
-    """World-frame centre (m) and yaw (rad) of one object, ready to pass to pick."""
+    """World-frame centre (m) and yaw (rad) of one GRASPABLE object, ready to pass to pick."""
     node = robot.getFromDef(str(object_id).upper())
-    if node is None or not node.getDef().startswith(OBJECT_PREFIX):
+    if node is None or not node.getDef().startswith(OBJECT_PREFIXES) or OBJECT_KINDS.get(node.getField("model").getSFString())!="graspable":
         return {"ok": False, "reason": "not_found",
                 "detail": f"no object {object_id!r}, call get_objects for the ids"}
     x, y, z = node.getPosition()
@@ -406,6 +409,19 @@ def get_target_position(object_id):
     yaw = float(np.arctan2(R[1, 0], R[0, 0]))     # rotation about world z
     return {"ok": True, "reason": "ok", "object_id": object_id,
             "x": round(x, 3), "y": round(y, 3), "z": round(z, 3), "yaw": round(yaw, 3)}
+
+def get_area_position(object_id):
+    """World_frame centre (m), shape and x and y extreme values of an area object, ready to pass to place. The edges of the area are aligned with word coordinate system."""
+    node = robot.getFromDef(str(object_id).upper())
+    if node is None or not node.getDef().startswith(OBJECT_PREFIXES) or OBJECT_KINDS.get(node.getField("model").getSFString())!="area":
+        return {"ok": False, "reason": "not_found",
+                "detail": f"no object {object_id!r}, call get_objects for the ids"}
+    x, y, z = node.getPosition()
+    shape=node.getField("children").getMFNode(0)
+    area= shape.getField("geometry").getSFNode()
+    width, depth,_ = area.getField("size").getSFVec3f()
+    return {"ok": True, "reason": "ok", "object_id": object_id,"shape":"rectangle", 
+            "center_x": round(x, 3), "center_y": round(y, 3), "center_z": round(z, 3), "x_min":x-(width/2-CUBE_SIZE/2), "x_max":x+(width/2-CUBE_SIZE/2), "y_min":y-(depth/2-CUBE_SIZE/2), "y_max":y+(depth/2-CUBE_SIZE/2)}
 
 def get_gripper_state():
     """Read-only gripper state, ready to return to the client."""

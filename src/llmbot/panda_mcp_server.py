@@ -36,11 +36,14 @@ FRAME_MAX_AGE = 3.0             # s wall time; older camera frame = camera dead 
 
 # Keys the model sees; everything else is controller-side debug
 KEEP = {"ok", "reason", "detail", "stage", "holding", "width_mm", "dropped",
-        "objects", "object_id", "x", "y", "z", "yaw"}
+        "objects", "object_id", "x", "y", "z", "yaw", "shape","x_min", "x_max", "y_min", "y_max"}
 
 # Colour words for recognitionColors
-COLOURS = {"red": (1, 0, 0), "green": (0, 1, 0), "blue": (0, 0, 1),
-           "yellow": (1, 1, 0), "white": (1, 1, 1)}
+COLOURS = {"red": (0.666667, 0, 0), "green": (0, 0.333333, 0), "blue": (0,0, 0.498039),
+           "yellow": (1, 1, 0), "pink": (1, 0.333333, 1), "brown": (0.439216,0.258824,0.0784314)}
+# Object mapping for get_object
+OBJECT_KINDS ={"cube":"graspable", "basket":"area"}
+CUBE_SIZE=0.04
 
 # Configure logging
 logging.basicConfig(
@@ -238,7 +241,7 @@ def colour_word(rgb: list[float]) -> str:
         rgb: List of 3 floats in [0, 1].
 
     Returns:
-        A colour word like "red", "green", "blue", "yellow", "white", or "unknown".
+        A colour word like "red", "green", "blue", "yellow", "pink", "brown" or "unknown".
     """
     if len(rgb) < 3:
         return "unknown"
@@ -303,13 +306,13 @@ def get_gripper_state() -> dict:
 
 @mcp.tool()
 def get_objects() -> dict:
-    """List all graspable objects in the scene.
+    """List all graspable and non graspable objects in the scene.
 
-    Call this first: the ids are needed by get_target_position.
+    Call this first: the ids are needed by get_target_position and get_area_position.
     If an object is not visible to the camera (e.g., it's under the arm), it will not be included in the list.
 
     Returns:
-        ok, reason, objects (list of dicts with id, colour).
+        ok, reason, objects (list of dicts with id, kind, colour).
     """
     start = time.monotonic()
     frame = read_frame()
@@ -318,20 +321,20 @@ def get_objects() -> dict:
     logger.debug(f"get_objects -> {frame}")
     if not frame["ok"]:
         return trim(frame)
-    objects = [{"id": f"obj_{o['id']}", "colour": colour_word(o.get("colours", []))}
+    objects = [{"id": f"obj_{o['id']}", "kind": OBJECT_KINDS.get(o.get("model", ""), "unknown"), "colour": colour_word(o.get("colours", []))}
                for o in frame["objects"]]
     return trim({"ok": True, "reason": "ok", "objects": objects})
 
 @mcp.tool()
 def get_target_position(object_id: str) -> dict:
-    """Get the centre and rotation of one object, ready to pass to pick.
+    """Get the centre and rotation of one GRASPABLE object, ready to pass to pick.
 
     Args:
         object_id: An id from get_objects, e.g. "obj_412".
 
     Returns:
         ok, reason, object_id, x, y, z (metres, world frame), yaw (rad).
-        reason "not_found" if the id does not exist or the camera does not see it.
+        reason "not_found" if the id does not exist or the camera does not see it or if it is a non graspable area.
     """
     object_id = object_id.strip()
     if not object_id:
@@ -348,6 +351,36 @@ def get_target_position(object_id: str) -> dict:
             x, y, z = o["position_world"]
             return trim({"ok": True, "reason": "ok", "object_id": object_id,
                          "x": x, "y": y, "z": z, "yaw": o["yaw_world"]})
+    return {"ok": False, "reason": "not_found",
+            "detail": f"camera does not see {object_id!r}, call get_objects for the ids"}
+
+@mcp.tool()
+def get_area_position(object_id: str) -> dict:
+    """World_frame centre (m), shape and x and y extreme values of an area object, ready to pass to place. The edges of the area are aligned with word coordinate system. The safe place region is between [x_min,x_max] and [y_min,y_max].
+
+    Args:
+        object_id: An id from get_objects, e.g. "obj_412".
+
+    Returns:
+        ok, reason, object_id, x, y, z (metres, world frame), shape, x_min, x_max, y_min, y_max(world frame).
+        reason "not_found" if the id does not exist or the camera does not see it or if it is a graspable object.
+    """
+    object_id = object_id.strip()
+    if not object_id:
+        return {"ok": False, "reason": "error", "detail": "object_id is empty"}
+    start = time.monotonic()
+    frame = read_frame()
+    span = time.monotonic() - start
+    logger.info(f"get_target_position -> {frame.get('reason')} ({span:.3f} s)")
+    logger.debug(f"get_target_position -> {frame}")
+    if not frame["ok"]:
+        return frame
+    for o in frame["objects"]:
+        if f"obj_{o['id']}" == object_id:
+            x, y, z = o["position_world"]
+            _, depth=o["size"]  # only depth is recognised properly, but its a square
+            return trim({"ok": True, "reason": "ok", "object_id": object_id,"shape":"rectangle",
+                         "x": x, "y": y, "z": z+CUBE_SIZE/2, "x_min":x-(depth/2-CUBE_SIZE/2), "x_max":x+(depth/2-CUBE_SIZE/2), "y_min":y-(depth/2-CUBE_SIZE/2), "y_max":y+(depth/2-CUBE_SIZE/2)})
     return {"ok": False, "reason": "not_found",
             "detail": f"camera does not see {object_id!r}, call get_objects for the ids"}
 
