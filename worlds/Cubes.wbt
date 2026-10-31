@@ -6,8 +6,8 @@ IMPORTABLE EXTERNPROTO "../protos/cube.proto"
 WorldInfo {
 }
 Viewpoint {
-  orientation 0.1465690830659201 0.2979477557502388 -0.9432627622951153 0.9614080956988966
-  position -3.3423400847180202 4.038588077333205 2.107029305826614
+  orientation 0.11880949895165104 0.031430871895209024 -0.9924194694033186 2.6280716285861523
+  position 2.922216731528774 1.3500518339398242 0.9662297711174468
 }
 Background {
   skyColor [
@@ -52,15 +52,19 @@ DEF BASKET Solid {
         metalness 0
         emissiveColor 0.439216 0.258824 0.0784314
       }
-      geometry Plane {
-        size 0.4 0.4
+      geometry Box {
+        size 0.4 0.4 0.001
       }
     }
   ]
   name "basket"
-  boundingObject Plane {
-    size 0.4 0.4
+  model "basket"
+  boundingObject Box {
+    size 0.4 0.4 0.001
   }
+  recognitionColors [
+    0.439216 0.258824 0.0784314
+  ]
 }
 Robot {
   name "Supervisor"
