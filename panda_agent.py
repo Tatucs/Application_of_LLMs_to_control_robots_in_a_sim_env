@@ -13,6 +13,7 @@ transport = StdioTransport(
 )
 
 model='google:gemini-3.5-flash-lite'
+model2='openai-chat:Qwen/Qwen3.8-27B-NVFP4' # can do more requests
 
 # Wrap the transport in an MCPToolset
 toolset = MCPToolset(transport)
