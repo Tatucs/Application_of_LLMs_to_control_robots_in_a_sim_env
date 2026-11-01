@@ -378,9 +378,9 @@ def get_area_position(object_id: str) -> dict:
     for o in frame["objects"]:
         if f"obj_{o['id']}" == object_id:
             x, y, z = o["position_world"]
-            _, depth=o["size"]  # only depth is recognised properly, but its a square
+            _, depth=o["size"]  # only depth is recognised properly, luckily its a square
             return trim({"ok": True, "reason": "ok", "object_id": object_id,"shape":"rectangle",
-                         "x": x, "y": y, "z": z+CUBE_SIZE/2, "x_min":x-(depth/2-CUBE_SIZE/2), "x_max":x+(depth/2-CUBE_SIZE/2), "y_min":y-(depth/2-CUBE_SIZE/2), "y_max":y+(depth/2-CUBE_SIZE/2)})
+                         "x": x, "y": y, "z": z+CUBE_SIZE/2+0.002, "x_min":x-(depth/2-CUBE_SIZE/2), "x_max":x+(depth/2-CUBE_SIZE/2), "y_min":y-(depth/2-CUBE_SIZE/2), "y_max":y+(depth/2-CUBE_SIZE/2)})
     return {"ok": False, "reason": "not_found",
             "detail": f"camera does not see {object_id!r}, call get_objects for the ids"}
 
