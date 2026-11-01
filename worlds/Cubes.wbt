@@ -6,8 +6,8 @@ IMPORTABLE EXTERNPROTO "../protos/cube.proto"
 WorldInfo {
 }
 Viewpoint {
-  orientation 0.1678222820537743 0.07872622029379694 -0.9826687457554126 2.277690266321069
-  position 2.3723380826155873 2.193705238291429 1.666840253096313
+  orientation 0.11880949895165104 0.031430871895209024 -0.9924194694033186 2.6280716285861523
+  position 2.922216731528774 1.3500518339398242 0.9662297711174468
 }
 Background {
   skyColor [
@@ -38,8 +38,9 @@ Solid {
   }
   locked TRUE
 }
-DEF PANDA Panda {
-  controller "<none>"
+Panda {
+  controller "panda_mcp_controller"
+  supervisor TRUE
 }
 DEF BASKET Solid {
   translation 0.3 -0.46 0.001
@@ -51,18 +52,38 @@ DEF BASKET Solid {
         metalness 0
         emissiveColor 0.439216 0.258824 0.0784314
       }
-      geometry Plane {
-        size 0.4 0.4
+      geometry Box {
+        size 0.4 0.4 0.001
       }
     }
   ]
   name "basket"
-  boundingObject Plane {
-    size 0.4 0.4
+  model "basket"
+  boundingObject Box {
+    size 0.4 0.4 0.001
   }
+  recognitionColors [
+    0.439216 0.258824 0.0784314
+  ]
 }
 Robot {
   name "Supervisor"
   controller "supervisor_controller_cubes"
   supervisor TRUE
+}
+Robot {
+  translation 0.5 0 2
+  rotation 0 1 0 1.5708
+  children [
+    Camera {
+      name "overhead_camera"
+      width 640
+      height 480
+      recognition Recognition {
+        segmentation TRUE
+      }
+    }
+  ]
+  name "overhead_camera"
+  controller "overhead_camera_controller"
 }
