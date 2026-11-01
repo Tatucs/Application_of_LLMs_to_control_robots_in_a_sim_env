@@ -12,12 +12,14 @@ transport = StdioTransport(
     args=["src/llmbot/panda_mcp_server.py"]
 )
 
+model='google:gemini-3.5-flash-lite'
+
 # Wrap the transport in an MCPToolset
 toolset = MCPToolset(transport)
 
 # Initialize the Gemini model via PydanticAI
 agent = Agent(
-    'google:gemini-3.5-flash-lite',
+    model=model,
     system_prompt=(
         "You are a robot arm operator controlling one Franka Emika Panda robot arm in Webots."
         "Use the provided tools to check gripper and object status, get target position, taret area or camera image. Your goal is to pick and place objects according to the instructions. "
@@ -32,9 +34,8 @@ agent = Agent(
 logfire.configure(send_to_logfire='if-token-present')
 logfire.instrument_pydantic_ai()
 
-rate_limiter = AsyncLimiter(max_rate=15, time_period=61)
+rate_limiter = AsyncLimiter(max_rate=10, time_period=65)
 
-usage_limits=UsageLimits(request_limit=10)
 message_history:list[ModelMessage] | None=None
 usage: RunUsage=RunUsage()
 
@@ -54,7 +55,6 @@ async def main():
                 user_input,
                 usage=usage,
                 message_history=message_history,
-                #usage_limits=usage_limits,
                 )
             print(f"\nRobot > {result.output}\n")
             print(f"Usage details: {result.usage}\n")

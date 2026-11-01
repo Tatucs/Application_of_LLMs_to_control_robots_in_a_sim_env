@@ -10,7 +10,7 @@ from controller import Supervisor
 # =============================== PARAMETERS ==============================
 SEED = 42
 N_CUBES = 5
-MAX_ROUNDS = 5                    # total cube sets 
+MAX_ROUNDS = 1                    # total cube sets 
 ROUND_TIMEOUT = 300.0             # [s] sim time before a round is declared failed
 # cube
 COLORS = [[0,0, 0.498039],[0.666667, 0, 0],[0, 0.333333, 0],[1, 0.333333, 1],[1, 1, 0]]     # Blue, Red, Green, Pink, Yellow
