@@ -15,7 +15,9 @@ dependencies = [
     "google-genai",
     "httpx",
     "python-dotenv",
-    "ikpy"
+    "ikpy",
+    "aiolimiter",
+    "logfire"
 ]
 
 [project.optional-dependencies]
