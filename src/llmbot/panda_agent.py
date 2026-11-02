@@ -6,6 +6,11 @@ from aiolimiter import AsyncLimiter
 from pydantic_ai import Agent, UsageLimits, ModelMessage, RunUsage
 from pydantic_ai.mcp import MCPToolset
 from fastmcp.client.transports import StdioTransport
+from dotenv import load_dotenv
+from llmbot.rate_limit import RateLimitedModel
+
+# Load API keys from the repository's .env, wherever the agent is started from
+load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 # Defining the Stdio connection to Webots MCP server script
 # This script runs the FastMCP server, exposing the robot's capabilities as tools.
@@ -20,9 +25,12 @@ model2='openai-chat:Qwen/Qwen3.8-27B-NVFP4' # can do more requests
 # Wrap the transport in an MCPToolset
 toolset = MCPToolset(transport)
 
+# Leaky bucket: at most 1 + 60/5 = 13 requests in any 60 s window (Gemini free tier: 15)
+rate_limiter = AsyncLimiter(max_rate=1, time_period=5)
+
 # Initialize the Gemini model via PydanticAI
 agent = Agent(
-    model=model,
+    model=RateLimitedModel(model, rate_limiter),
     system_prompt=(
         "You are a robot arm operator controlling one Franka Emika Panda robot arm in Webots."
         "Use the provided tools to check gripper and object status, get target position, taret area or camera image. Your goal is to pick and place objects according to the instructions. "
@@ -37,30 +45,27 @@ agent = Agent(
 logfire.configure(send_to_logfire='if-token-present')
 logfire.instrument_pydantic_ai()
 
-rate_limiter = AsyncLimiter(max_rate=10, time_period=65)
-
 message_history:list[ModelMessage] | None=None
 usage: RunUsage=RunUsage()
 
 async def main():
     # The 'async with' block automatically starts the stdio subprocess and loads the tools
-    async with rate_limiter:
-        print("--- Panda Robot Webots Terminal CLI ---")
-        print("Type 'exit' or 'quit' to end.\n")
-        
-        while True:
-            user_input = input("Operator > ").strip()
-            if not user_input or user_input.lower() in ["exit", "quit"]:
-                break
-            
-            # The agent evaluates the prompt, calls MCP tools as needed, and returns the result
-            result = await agent.run(
-                user_input,
-                usage=usage,
-                message_history=message_history,
-                )
-            print(f"\nRobot > {result.output}\n")
-            print(f"Usage details: {result.usage}\n")
+    print("--- Panda Robot Webots Terminal CLI ---")
+    print("Type 'exit' or 'quit' to end.\n")
+
+    while True:
+        user_input = input("Operator > ").strip()
+        if not user_input or user_input.lower() in ["exit", "quit"]:
+            break
+
+        # The agent evaluates the prompt, calls MCP tools as needed, and returns the result
+        result = await agent.run(
+            user_input,
+            usage=usage,
+            message_history=message_history,
+            )
+        print(f"\nRobot > {result.output}\n")
+        print(f"Usage details: {result.usage}\n")
 
 if __name__ == "__main__":
     asyncio.run(main())
