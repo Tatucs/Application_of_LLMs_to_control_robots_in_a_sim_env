@@ -376,7 +376,9 @@ def go_home():
     return {"ok": True, "reason": "ok", "stage": "done", "dropped": was_holding,
             "reached": np.round(tcp_pos(), 4).tolist()}
 
+# ---------------------------------------------------------------------------------
 # ---------------------------------------------------------------- Perception tools
+# Simulator ground truth, not exposed as MCP tools; for checking the camera-based tools
 
 def scene_nodes(prefix:list[str]):
     """Top-level scene nodes whose DEF starts with prefix."""
@@ -421,12 +423,14 @@ def get_area_position(object_id):
     area= shape.getField("geometry").getSFNode()
     width, depth,_ = area.getField("size").getSFVec3f()
     return {"ok": True, "reason": "ok", "object_id": object_id,"shape":"rectangle", 
-            "center_x": round(x, 3), "center_y": round(y, 3), "center_z": round(z, 3), "x_min":x-(width/2-CUBE_SIZE/2), "x_max":x+(width/2-CUBE_SIZE/2), "y_min":y-(depth/2-CUBE_SIZE/2), "y_max":y+(depth/2-CUBE_SIZE/2)}
+            "x": round(x, 3), "y": round(y, 3), "z": round(z, 3), "x_min":x-(width/2-CUBE_SIZE/2), "x_max":x+(width/2-CUBE_SIZE/2), "y_min":y-(depth/2-CUBE_SIZE/2), "y_max":y+(depth/2-CUBE_SIZE/2)}
 
 def get_gripper_state():
     """Read-only gripper state, ready to return to the client."""
     state = gripper_state()
     return {"ok": True, "reason": "ok", **state}
+
+# ---------------------------------------------------------------------------------
 
 # ---------------------------------------------------------------- Command loop
 
@@ -467,6 +471,7 @@ ACTIONS = {"pick": cmd_pick,
            "go_home": go_home,
            "get_objects": get_objects,
            "get_target_position": get_target_position,
+           "get_area_position": get_area_position,
            "get_gripper_state": get_gripper_state}   # action name -> function
 
 cmd = read_json(COMMANDS_FILE)
