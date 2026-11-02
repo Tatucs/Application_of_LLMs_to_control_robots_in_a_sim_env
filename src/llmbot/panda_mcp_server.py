@@ -348,6 +348,9 @@ def get_target_position(object_id: str) -> dict:
         return frame
     for o in frame["objects"]:
         if f"obj_{o['id']}" == object_id:
+            if OBJECT_KINDS.get(o.get("model", "")) != "graspable":
+                return {"ok": False, "reason": "not_found",
+                        "detail": f"{object_id!r} is not graspable, use get_area_position for areas"}
             x, y, z = o["position_world"]
             return trim({"ok": True, "reason": "ok", "object_id": object_id,
                          "x": x, "y": y, "z": z, "yaw": o["yaw_world"]})
@@ -371,12 +374,15 @@ def get_area_position(object_id: str) -> dict:
     start = time.monotonic()
     frame = read_frame()
     span = time.monotonic() - start
-    logger.info(f"get_target_position -> {frame.get('reason')} ({span:.3f} s)")
-    logger.debug(f"get_target_position -> {frame}")
+    logger.info(f"get_area_position -> {frame.get('reason')} ({span:.3f} s)")
+    logger.debug(f"get_area_position -> {frame}")
     if not frame["ok"]:
         return frame
     for o in frame["objects"]:
         if f"obj_{o['id']}" == object_id:
+            if OBJECT_KINDS.get(o.get("model", "")) != "area":
+                return {"ok": False, "reason": "not_found",
+                        "detail": f"{object_id!r} is not an area, use get_target_position for graspable objects"}
             x, y, z = o["position_world"]
             _, depth=o["size"]  # only depth is recognised properly, luckily its a square
             return trim({"ok": True, "reason": "ok", "object_id": object_id,"shape":"rectangle",
