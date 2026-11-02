@@ -1,4 +1,6 @@
 import asyncio
+import sys
+from pathlib import Path
 import logfire
 from aiolimiter import AsyncLimiter
 from pydantic_ai import Agent, UsageLimits, ModelMessage, RunUsage
@@ -11,8 +13,8 @@ from fastmcp.client.transports import StdioTransport
 # Defining the Stdio connection to Webots MCP server script
 # This script runs the FastMCP server, exposing the robot's capabilities as tools.
 transport = StdioTransport(
-    command="python",
-    args=["src/llmbot/panda_mcp_server.py"]
+    command=sys.executable,
+    args=[str(Path(__file__).resolve().parent / "panda_mcp_server.py")]
 )
 
 logfire.configure(send_to_logfire='if-token-present')
