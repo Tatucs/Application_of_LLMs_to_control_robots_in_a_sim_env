@@ -42,6 +42,7 @@ class Step(BaseModel):
     z: float | None = None
     yaw: float = 0.0
     note: str = ""                     # free text for the executor
+    status: str | None = None          # executor writes "done" / "failed"
 
 
 class Plan(BaseModel):
@@ -49,10 +50,10 @@ class Plan(BaseModel):
     reasoning: str                     # keep this, it's valuable for the case studies
     steps: list[Step]
 
-async def make_plan(task: str, usage: RunUsage) -> Plan:
+async def make_plan(task: str, usage: RunUsage, previous: Plan | None = None) -> Plan:
     pass
 
-async def execute_plan(plan: Plan, usage: RunUsage) -> str:
+async def execute_plan(plan: Plan, usage: RunUsage) -> Plan:
     pass
 
 
@@ -115,7 +116,7 @@ def fidelity(plan: Plan, messages: list[ModelMessage]) -> FidelityResult:
     for m in messages:
         if isinstance(m, ModelResponse):
             for p in m.parts:
-                if isinstance(p, ToolCallPart):
+                if isinstance(p, ToolCallPart) and p.tool_name != "final_result":
                     a = p.args_as_dict()   # args may arrive as dict or JSON string
                     executed.append((p.tool_name, a.get("x"), a.get("y"), a.get("z"),
                                      a.get("yaw", 0.0)))
@@ -138,7 +139,7 @@ class AttemptRecord(BaseModel):
     attempt: int                           # 1-based
     plan: Plan | None = None               # None if make_plan raised
     plan_error: str | None = None
-    report: str | None = None              # executor free text; None if it raised
+    report: Plan | None = None             # marked plan from the executor; None if it raised
     exec_error: str | None = None
     check: CheckResult | None = None       # None if make_plan raised (no check, §3.2)
     fidelity: FidelityResult | None = None
@@ -147,6 +148,7 @@ class AttemptRecord(BaseModel):
 
 class TaskRecord(BaseModel):
     task: str
+    warm: bool
     planner_model: str
     executor_model: str
     max_attempts: int
@@ -157,10 +159,11 @@ class TaskRecord(BaseModel):
 
 # ----------------------------------------- loop
 
-async def run_task(task: str) -> TaskRecord:
-    """C3a loop: plan, execute, check; replan until ok, check error, or MAX_ATTEMPTS."""
-    rec = TaskRecord(task=task, planner_model="stub", executor_model="stub",
+async def run_task(task: str, warm: bool) -> TaskRecord:
+    """C3 loop: plan, execute, check; replan until ok, check error, or MAX_ATTEMPTS."""
+    rec = TaskRecord(task=task, warm=warm, planner_model="stub", executor_model="stub",
                      max_attempts=MAX_ATTEMPTS)
+    previous = None
 
     for attempt in range(1, MAX_ATTEMPTS + 1):
         a = AttemptRecord(attempt=attempt)
@@ -169,7 +172,7 @@ async def run_task(task: str) -> TaskRecord:
 
         # plan; a raise = failed attempt, no check
         try:
-            a.plan = await make_plan(task, rec.planner_usage)
+            a.plan = await make_plan(task, rec.planner_usage, previous)
         except Exception as e:
             a.plan_error = f"{type(e).__name__}: {e}"
             a.wall_time = time.perf_counter() - t0
@@ -191,6 +194,13 @@ async def run_task(task: str) -> TaskRecord:
         if a.check.ok:
             rec.success = True
             break
+
+        # C3b: send back the plan with only the executor's marks copied onto it
+        if warm:
+            previous = a.plan.model_copy(deep=True)
+            marks = {s.step: s.status for s in a.report.steps} if a.report else {}
+            for s in previous.steps:
+                s.status = marks.get(s.step)
 
     return rec
 
