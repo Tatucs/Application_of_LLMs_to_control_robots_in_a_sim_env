@@ -12,7 +12,7 @@ fails just because Webots is not running.
 import pytest
 import pytest_asyncio
 
-from llmbot.c3a_closed_loop_agent import TOL, Plan, Step, check_scene, toolset
+from llmbot.c3_agents import TOL, Plan, Step, check_scene, toolset
 
 # `toolset` is a module-level object, so it stays bound to the event loop it
 # first connected on. pytest-asyncio's default (a new loop per test) closes that
