@@ -14,7 +14,7 @@ from fastmcp.client.transports import StdioTransport
 from pydantic import BaseModel
 from pydantic_ai import RunUsage, capture_run_messages
 from pydantic_ai.mcp import MCPToolset
-from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
+from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart, ToolReturnPart
 
 # Constants
 TOL = 0.02                      # m; max x/y distance of a cube from its place target
@@ -64,7 +64,6 @@ class CheckResult(BaseModel):
     mismatches: list[str]              # e.g. "obj_412: 0.031 m from place target"
     error: str | None = None           # scene not visible (e.g. sim paused); stops the loop
 
-
 async def check_scene(plan: Plan, attempt: int) -> CheckResult:
     """Check if every placed cube is at its place coordinates."""
     places = [s for s in plan.steps if s.tool == "place"]
@@ -100,13 +99,15 @@ async def check_scene(plan: Plan, attempt: int) -> CheckResult:
 
     return CheckResult(ok=not mismatches, mismatches=mismatches)
 
-
 # ----------------------------------------- executor fidelity
 
 class FidelityResult(BaseModel):
     ok: bool
     first_mismatch: int | None = None  # 1-based position where execution left the plan
 
+class AgreementResult(BaseModel):
+    ok: bool
+    disagreements: list[int] = []         # step numbers where mark != real result
 
 def fidelity(plan: Plan, messages: list[ModelMessage]) -> FidelityResult:
     """Did the executor call exactly the planned tools, in order?"""
@@ -133,6 +134,26 @@ def fidelity(plan: Plan, messages: list[ModelMessage]) -> FidelityResult:
         return FidelityResult(ok=False, first_mismatch=min(len(planned), len(executed)) + 1)
     return FidelityResult(ok=True)
 
+def status_agreement(marked: Plan, messages: list[ModelMessage]) -> AgreementResult:
+    """Does each done/failed mark match the ok field the tool really returned?"""
+    calls = []          # executed ToolCallParts, in order
+    results = {}        # tool_call_id -> ok
+    for m in messages:
+        for p in m.parts:
+            if isinstance(p, ToolCallPart) and p.tool_name != "final_result":
+                calls.append(p)
+            elif isinstance(p, ToolReturnPart) and isinstance(p.content, dict):
+                results[p.tool_call_id] = p.content.get("ok")
+
+    disagreements = []
+    for s, c in zip(marked.steps, calls):
+        if s.tool != c.tool_name or s.tool not in ("pick", "place"):
+            continue
+        ok = results.get(c.tool_call_id)
+        if (s.status == "done" and ok is False) or (s.status == "failed" and ok is True):
+            disagreements.append(s.step)
+    return AgreementResult(ok=not disagreements, disagreements=disagreements)
+
 # ----------------------------------------- records
 
 class AttemptRecord(BaseModel):
@@ -144,6 +165,8 @@ class AttemptRecord(BaseModel):
     check: CheckResult | None = None       # None if make_plan raised (no check, §3.2)
     fidelity: FidelityResult | None = None
     wall_time: float = 0.0                 # s, perf_counter
+    bad_statuses: list[str] = []          # status values other than done / failed / None
+    agreement: AgreementResult | None = None
 
 
 class TaskRecord(BaseModel):
@@ -188,6 +211,10 @@ async def run_task(task: str, warm: bool) -> TaskRecord:
         a.fidelity = fidelity(a.plan, msgs)
         a.check = await check_scene(a.plan, attempt)
         a.wall_time = time.perf_counter() - t0
+        if a.report:
+            a.bad_statuses = [s.status for s in a.report.steps
+                              if s.status not in ("done", "failed", None)]
+            a.agreement = status_agreement(a.report, msgs)
 
         if a.check.error:        # scene not visible: stop, run discarded
             break
