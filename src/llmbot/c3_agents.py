@@ -50,7 +50,8 @@ class Plan(BaseModel):
     reasoning: str                     # keep this, it's valuable for the case studies
     steps: list[Step]
 
-async def make_plan(task: str, usage: RunUsage, previous: Plan | None = None) -> Plan:
+async def make_plan(task: str, usage: RunUsage, previous: Plan | None = None,
+                    trace: "list[Failure] | None" = None) -> Plan:
     pass
 
 async def execute_plan(plan: Plan, usage: RunUsage) -> Plan:
@@ -134,25 +135,54 @@ def fidelity(plan: Plan, messages: list[ModelMessage]) -> FidelityResult:
         return FidelityResult(ok=False, first_mismatch=min(len(planned), len(executed)) + 1)
     return FidelityResult(ok=True)
 
-def status_agreement(marked: Plan, messages: list[ModelMessage]) -> AgreementResult:
-    """Does each done/failed mark match the ok field the tool really returned?"""
+def executed_calls(messages: list[ModelMessage]) -> list[tuple[ToolCallPart, dict | None]]:
+    """Executed tool calls in order, each with its result dict (None if no result came back)."""
     calls = []          # executed ToolCallParts, in order
-    results = {}        # tool_call_id -> ok
+    results = {}        # tool_call_id -> result dict
     for m in messages:
         for p in m.parts:
             if isinstance(p, ToolCallPart) and p.tool_name != "final_result":
                 calls.append(p)
             elif isinstance(p, ToolReturnPart) and isinstance(p.content, dict):
-                results[p.tool_call_id] = p.content.get("ok")
+                results[p.tool_call_id] = p.content
+    return [(c, results.get(c.tool_call_id)) for c in calls]
 
+def status_agreement(marked: Plan, messages: list[ModelMessage]) -> AgreementResult:
+    """Does each done/failed mark match the ok field the tool really returned?"""
     disagreements = []
-    for s, c in zip(marked.steps, calls):
+    for s, (c, r) in zip(marked.steps, executed_calls(messages), strict=False):
         if s.tool != c.tool_name or s.tool not in ("pick", "place"):
             continue
-        ok = results.get(c.tool_call_id)
+        ok = r.get("ok") if r else None
         if (s.status == "done" and ok is False) or (s.status == "failed" and ok is True):
             disagreements.append(s.step)
     return AgreementResult(ok=not disagreements, disagreements=disagreements)
+
+
+# ----------------------------------------- failure feedback
+
+class Failure(BaseModel):
+    attempt: int
+    step: int
+    tool: str                  # "pick" or "place"
+    object_id: str | None      # from the plan step; pick/place take no id
+    reason: str
+    detail: str = ""
+
+def failures(plan: Plan, messages: list[ModelMessage], attempt: int) -> list[Failure]:
+    """One Failure per pick/place whose tool result had ok: false."""
+    out = []
+    for s, (c, r) in zip(plan.steps, executed_calls(messages), strict=False):
+        if s.tool != c.tool_name or s.tool not in ("pick", "place"):
+            continue                      # off-plan call: fidelity reports it
+        if r is None or r.get("ok") is not False:
+            continue                      # no result (executor raised mid-call) or success
+        out.append(Failure(attempt=attempt, step=s.step, tool=s.tool,
+                           object_id=s.object_id,   # from the plan; the call has only x/y/z
+                           reason=r.get("reason", "unknown"),
+                           detail=r.get("detail", "")))
+    return out
+
 
 # ----------------------------------------- records
 
@@ -165,13 +195,15 @@ class AttemptRecord(BaseModel):
     check: CheckResult | None = None       # None if make_plan raised (no check, §3.2)
     fidelity: FidelityResult | None = None
     wall_time: float = 0.0                 # s, perf_counter
-    bad_statuses: list[str] = []          # status values other than done / failed / None
+    bad_statuses: list[str] = []           # status values other than done / failed / None
     agreement: AgreementResult | None = None
+    failures: list[Failure] = []           # failures of the executor's tool calls
 
 
 class TaskRecord(BaseModel):
     task: str
-    warm: bool
+    warm: bool                              # C3b
+    feedback: bool                          # C3c
     planner_model: str
     executor_model: str
     max_attempts: int
@@ -182,11 +214,16 @@ class TaskRecord(BaseModel):
 
 # ----------------------------------------- loop
 
-async def run_task(task: str, warm: bool) -> TaskRecord:
+async def run_task(task: str, warm: bool = False, feedback: bool = False) -> TaskRecord:
     """C3 loop: plan, execute, check; replan until ok, check error, or MAX_ATTEMPTS."""
-    rec = TaskRecord(task=task, warm=warm, planner_model="stub", executor_model="stub",
+    rec = TaskRecord(task=task,
+                     warm=warm,
+                     feedback=feedback,
+                     planner_model="stub",
+                     executor_model="stub",
                      max_attempts=MAX_ATTEMPTS)
-    previous = None
+    previous = None                 # C3b
+    trace: list[Failure] = []       # C3c
 
     for attempt in range(1, MAX_ATTEMPTS + 1):
         a = AttemptRecord(attempt=attempt)
@@ -195,7 +232,8 @@ async def run_task(task: str, warm: bool) -> TaskRecord:
 
         # plan; a raise = failed attempt, no check
         try:
-            a.plan = await make_plan(task, rec.planner_usage, previous)
+            a.plan = await make_plan(task, rec.planner_usage, previous,
+                                     trace if feedback else None)
         except Exception as e:
             a.plan_error = f"{type(e).__name__}: {e}"
             a.wall_time = time.perf_counter() - t0
@@ -209,6 +247,7 @@ async def run_task(task: str, warm: bool) -> TaskRecord:
                 a.exec_error = f"{type(e).__name__}: {e}"
 
         a.fidelity = fidelity(a.plan, msgs)
+        a.failures = failures(a.plan, msgs, attempt)
         a.check = await check_scene(a.plan, attempt)
         a.wall_time = time.perf_counter() - t0
         if a.report:
@@ -228,6 +267,10 @@ async def run_task(task: str, warm: bool) -> TaskRecord:
             marks = {s.step: s.status for s in a.report.steps} if a.report else {}
             for s in previous.steps:
                 s.status = marks.get(s.step)
+                        
+        # C3c: all failures of this task so far, from all attempts
+        if feedback:
+            trace.extend(a.failures)
 
     return rec
 
