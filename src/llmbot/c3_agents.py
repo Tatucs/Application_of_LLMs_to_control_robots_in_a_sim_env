@@ -1,8 +1,18 @@
 '''
-C3a closed-loop agent: C2 (planner + executor) plus a scene check and replanning.
+C3 closed-loop agents: C2 (planner + executor) plus a scene check and replanning.
+One loop, run_task(task, warm, feedback), covers all three:
 
-After each execution, check_scene compares the scene with the plan through the
-MCP perception tools; fidelity compares the executor's tool calls with the plan.
+- C3a (warm=False): after each execution, check_scene compares the scene with the
+  plan through the MCP perception tools; on a mismatch the planner starts from scratch.
+- C3b (warm=True): warm start; the previous plan, with the executor's done/failed
+  marks, goes back to the planner.
+- C3c (warm=True, feedback=True): C3b plus a trace of all failed pick/place calls
+  so far (tool's reason and detail), read from the executor's messages.
+
+Measured in every configuration: fidelity (executor's calls vs plan), failures,
+and for C3b/C3c the status agreement (executor's marks vs real tool results).
+
+Run (from the repository root, sim running): python -m llmbot.c3_agents
 '''
 
 import asyncio
@@ -58,7 +68,23 @@ async def execute_plan(plan: Plan, usage: RunUsage) -> Plan:
     pass
 
 
-# ----------------------------------------- scene check
+# ----------------------------------------- helpers
+
+# C3b + C3c: shared by status_agreement and failures
+def executed_calls(messages: list[ModelMessage]) -> list[tuple[ToolCallPart, dict | None]]:
+    """Executed tool calls in order, each with its result dict (None if no result came back)."""
+    calls = []          # executed ToolCallParts, in order
+    results = {}        # tool_call_id -> result dict
+    for m in messages:
+        for p in m.parts:
+            if isinstance(p, ToolCallPart) and p.tool_name != "final_result":
+                calls.append(p)
+            elif isinstance(p, ToolReturnPart) and isinstance(p.content, dict):
+                results[p.tool_call_id] = p.content
+    return [(c, results.get(c.tool_call_id)) for c in calls]
+
+
+# ----------------------------------------- scene check [C3a, used by all C3]
 
 class CheckResult(BaseModel):
     ok: bool
@@ -100,15 +126,11 @@ async def check_scene(plan: Plan, attempt: int) -> CheckResult:
 
     return CheckResult(ok=not mismatches, mismatches=mismatches)
 
-# ----------------------------------------- executor fidelity
+# ----------------------------------------- executor fidelity [C3a]
 
 class FidelityResult(BaseModel):
     ok: bool
     first_mismatch: int | None = None  # 1-based position where execution left the plan
-
-class AgreementResult(BaseModel):
-    ok: bool
-    disagreements: list[int] = []         # step numbers where mark != real result
 
 def fidelity(plan: Plan, messages: list[ModelMessage]) -> FidelityResult:
     """Did the executor call exactly the planned tools, in order?"""
@@ -135,17 +157,12 @@ def fidelity(plan: Plan, messages: list[ModelMessage]) -> FidelityResult:
         return FidelityResult(ok=False, first_mismatch=min(len(planned), len(executed)) + 1)
     return FidelityResult(ok=True)
 
-def executed_calls(messages: list[ModelMessage]) -> list[tuple[ToolCallPart, dict | None]]:
-    """Executed tool calls in order, each with its result dict (None if no result came back)."""
-    calls = []          # executed ToolCallParts, in order
-    results = {}        # tool_call_id -> result dict
-    for m in messages:
-        for p in m.parts:
-            if isinstance(p, ToolCallPart) and p.tool_name != "final_result":
-                calls.append(p)
-            elif isinstance(p, ToolReturnPart) and isinstance(p.content, dict):
-                results[p.tool_call_id] = p.content
-    return [(c, results.get(c.tool_call_id)) for c in calls]
+
+# ----------------------------------------- status agreement [C3b]
+
+class AgreementResult(BaseModel):
+    ok: bool
+    disagreements: list[int] = []         # step numbers where mark != real result
 
 def status_agreement(marked: Plan, messages: list[ModelMessage]) -> AgreementResult:
     """Does each done/failed mark match the ok field the tool really returned?"""
@@ -159,7 +176,7 @@ def status_agreement(marked: Plan, messages: list[ModelMessage]) -> AgreementRes
     return AgreementResult(ok=not disagreements, disagreements=disagreements)
 
 
-# ----------------------------------------- failure feedback
+# ----------------------------------------- failure feedback [C3c; measured in all C3]
 
 class Failure(BaseModel):
     attempt: int
@@ -195,9 +212,9 @@ class AttemptRecord(BaseModel):
     check: CheckResult | None = None       # None if make_plan raised (no check, §3.2)
     fidelity: FidelityResult | None = None
     wall_time: float = 0.0                 # s, perf_counter
-    bad_statuses: list[str] = []           # status values other than done / failed / None
-    agreement: AgreementResult | None = None
-    failures: list[Failure] = []           # failures of the executor's tool calls
+    bad_statuses: list[str] = []           # C3b: status values other than done / failed / None
+    agreement: AgreementResult | None = None   # C3b
+    failures: list[Failure] = []           # C3c: failures of the executor's tool calls
 
 
 class TaskRecord(BaseModel):
@@ -231,6 +248,7 @@ async def run_task(task: str, warm: bool = False, feedback: bool = False) -> Tas
         t0 = time.perf_counter()
 
         # plan; a raise = failed attempt, no check
+        # previous is None in C3a, trace is None in C3a/C3b
         try:
             a.plan = await make_plan(task, rec.planner_usage, previous,
                                      trace if feedback else None)
@@ -267,7 +285,7 @@ async def run_task(task: str, warm: bool = False, feedback: bool = False) -> Tas
             marks = {s.step: s.status for s in a.report.steps} if a.report else {}
             for s in previous.steps:
                 s.status = marks.get(s.step)
-                        
+
         # C3c: all failures of this task so far, from all attempts
         if feedback:
             trace.extend(a.failures)
