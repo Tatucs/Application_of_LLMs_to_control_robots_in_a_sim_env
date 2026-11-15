@@ -30,7 +30,7 @@ rate_limiter = AsyncLimiter(max_rate=1, time_period=5)
 
 # Initialize the Gemini model via PydanticAI
 agent = Agent(
-    model=RateLimitedModel(model2, rate_limiter),
+    model=RateLimitedModel(model, rate_limiter),
     system_prompt=(
         "You are a robot arm operator controlling one Franka Emika Panda robot arm in Webots."
         "Use the provided tools to check gripper and object status, get target position, taret area or camera image. Your goal is to pick and place objects according to the instructions. "
@@ -45,7 +45,6 @@ agent = Agent(
 logfire.configure(send_to_logfire='if-token-present')
 logfire.instrument_pydantic_ai()
 
-message_history:list[ModelMessage] | None=None
 usage: RunUsage=RunUsage()
 
 async def main():
@@ -62,7 +61,6 @@ async def main():
         result = await agent.run(
             user_input,
             usage=usage,
-            message_history=message_history,
             )
         print(f"\nRobot > {result.output}\n")
         print(f"Usage details: {result.usage}\n")
