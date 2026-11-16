@@ -13,7 +13,7 @@ SEED = 42
 N_CUBES = 5
 MAX_ROUNDS = 1                    # total cube sets 
 ROUND_TIMEOUT = 300.0             # [s] sim time before a round is declared failed
-MIN_CUBE_SPACING=0.06
+MIN_CUBE_SPACING=0.06       # ~math.hypot(0.02,0.02)*2
 # cube
 COLORS = [[0,0, 0.498039],[0.666667, 0, 0],[0, 0.333333, 0],[1, 0.333333, 1],[1, 1, 0]]     # Blue, Red, Green, Pink, Yellow
 CUBE_Z = 0.03                    # spawn height of the cube centre (greater than CUBE_SIZE/2 to avoid collision with the floor)
@@ -55,7 +55,7 @@ def in_basket_xy(p_world, margin=0.02):
 
 # Spawn cubes
 def sample_position(taken):
-    """Samples a random position for a cube within the spawn area, ensuring it is not too close to the basket."""
+    """Samples a random position for a cube within the spawn area, ensuring it is not too close to another cube."""
     for _ in range(100):  # Try up to 100 times to find a valid position
         x = rng.uniform(*SPAWN_X_RANGE)
         y = rng.uniform(*SPAWN_Y_RANGE)
