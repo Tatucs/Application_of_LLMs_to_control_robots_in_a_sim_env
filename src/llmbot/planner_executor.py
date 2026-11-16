@@ -109,15 +109,14 @@ async def main():
     print("--- Panda Robot Webots Terminal CLI ---")
     print("Type 'exit' or 'quit' to end.\n")
 
-    # Separate usage for both agents
-    planner_usage=RunUsage()
-    executor_usage=RunUsage()
-
     while True:
         user_input = input("Operator > ").strip()
         if not user_input or user_input.lower() in ["exit", "quit"]:
             break
-        # Create a plan    
+        # Separate usage for both agents, fresh for each task
+        planner_usage=RunUsage()
+        executor_usage=RunUsage()
+        # Create a plan
         plan= await make_plan(task=user_input, usage=planner_usage)
         # Execute the plan
         await execute_plan(plan=plan, usage=executor_usage)
