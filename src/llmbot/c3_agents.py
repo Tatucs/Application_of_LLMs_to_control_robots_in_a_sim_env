@@ -25,7 +25,6 @@ from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart, Tool
 # C2: planner, executor and the MCP toolset (shared by both agents and the check)
 from llmbot.planner_executor import (
     Plan,
-    Step,
     execute_plan,
     executor_model,
     make_plan,
@@ -228,11 +227,14 @@ async def run_task(task: str, warm: bool = False, feedback: bool = False) -> Tas
             continue
 
         # execute; a raise = failed attempt, but still check
-        with capture_run_messages() as msgs:
-            try:
-                a.report = await execute_plan(a.plan, rec.executor_usage)
-            except Exception as e:
-                a.exec_error = f"{type(e).__name__}: {e}"
+        # empty plan: nothing to execute (planner says the task is already satisfied)
+        msgs: list[ModelMessage] = []
+        if a.plan.steps:
+            with capture_run_messages() as msgs:
+                try:
+                    a.report = await execute_plan(a.plan, rec.executor_usage)
+                except Exception as e:
+                    a.exec_error = f"{type(e).__name__}: {e}"
 
         a.fidelity = fidelity(a.plan, msgs)
         a.failures = failures(a.plan, msgs, attempt)
@@ -264,21 +266,32 @@ async def run_task(task: str, warm: bool = False, feedback: bool = False) -> Tas
 
 # ----------------------------------------- main
 
-async def main():
-    """Hand test of check_scene on the first graspable cube (sim must be running)."""
-    async with toolset:
-        objs = await toolset.direct_call_tool("get_objects", {})
-        print(objs)
-        cube = next(o["id"] for o in objs["objects"] if o["kind"] == "graspable")
-        pos = await toolset.direct_call_tool("get_target_position", {"object_id": cube})
-        print(pos)
+# variant -> (warm, feedback) for run_task
+VARIANTS = {
+    "a": (False, False),    # C3a: replan from scratch
+    "b": (True, False),     # C3b: warm start
+    "c": (True, True),      # C3c: warm start + failure feedback
+}
 
-        plan = Plan(reasoning="hand test", steps=[
-            Step(step=1, tool="place", object_id=cube, x=pos["x"], y=pos["y"], z=pos["z"]),
-        ])
-        print(await check_scene(plan, attempt=1))   # expect ok
-        plan.steps[0].x += 0.05
-        print(await check_scene(plan, attempt=1))   # expect 0.050 m mismatch
+async def main():
+    """Terminal CLI: choose C3a/b/c once, then run tasks (reset the world before each)."""
+    print("--- Panda C3 closed-loop agent ---")
+    variant = ""
+    while variant not in VARIANTS:
+        variant = input("Variant (a / b / c) > ").strip().lower()
+    warm, feedback = VARIANTS[variant]
+    print(f"C3{variant}: warm={warm}, feedback={feedback}")
+    print("Type 'exit' or 'quit' to end.\n")
+
+    # one MCP session for the planner, the executor and check_scene
+    async with toolset:
+        while True:
+            task = input("Operator > ").strip()
+            if not task or task.lower() in ["exit", "quit"]:
+                break
+            rec = await run_task(task, warm=warm, feedback=feedback)
+            print(rec.model_dump_json(indent=2))
+            print(f"success: {rec.success} after {len(rec.attempts)} attempt(s)")
 
 
 if __name__ == "__main__":
