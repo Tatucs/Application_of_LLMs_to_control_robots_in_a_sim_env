@@ -6,7 +6,8 @@
 import pytest
 from pydantic_ai.messages import ModelResponse, ToolCallPart
 
-from llmbot.c3_agents import Plan, Step, fidelity
+from llmbot.c3_agents import Plan, fidelity
+from llmbot.planner_executor import Step
 
 PLAN = Plan(reasoning="test", steps=[
     Step(step=1, tool="pick", object_id="obj_1", x=0.5, y=0.1, z=0.05),

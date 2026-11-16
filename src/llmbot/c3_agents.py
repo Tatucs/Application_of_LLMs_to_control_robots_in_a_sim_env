@@ -16,56 +16,26 @@ Run (from the repository root, sim running): python -m llmbot.c3_agents
 '''
 
 import asyncio
-import sys
-from pathlib import Path
 import time
 
-from fastmcp.client.transports import StdioTransport
 from pydantic import BaseModel
 from pydantic_ai import RunUsage, capture_run_messages
-from pydantic_ai.mcp import MCPToolset
 from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart, ToolReturnPart
+
+# C2: planner, executor and the MCP toolset (shared by both agents and the check)
+from llmbot.planner_executor import (
+    Plan,
+    Step,
+    execute_plan,
+    executor_model,
+    make_plan,
+    planner_model,
+    toolset,
+)
 
 # Constants
 TOL = 0.02                      # m; max x/y distance of a cube from its place target
-MAX_ATTEMPTS = 3                # max attempts to satisfy a task 
-
-# MCP toolset, shared by the planner, the executor and the check
-transport = StdioTransport(
-    command=sys.executable,
-    args=[str(Path(__file__).resolve().parent / "panda_mcp_server.py")]
-)
-toolset = MCPToolset(transport)
-
-
-# ----------------------------------------- Temporary functions
-# Temporary copy from Tomi's planner_executor.py; delete after the merge.
-
-class Step(BaseModel):
-    """One tool call of the plan."""
-    step: int                          # 1, 2, 3, ...
-    tool: str                          # "pick", "place" or "go_home"
-    object_id: str | None = None       # pick AND place: which cube (from get_objects)
-    target_area: str | None = None     # place: which area
-    x: float | None = None             # pick/place pose; None for go_home
-    y: float | None = None
-    z: float | None = None
-    yaw: float = 0.0
-    note: str = ""                     # free text for the executor
-    status: str | None = None          # executor writes "done" / "failed"
-
-
-class Plan(BaseModel):
-    """Output of the planner, input of the executor."""
-    reasoning: str                     # keep this, it's valuable for the case studies
-    steps: list[Step]
-
-async def make_plan(task: str, usage: RunUsage, previous: Plan | None = None,
-                    trace: "list[Failure] | None" = None) -> Plan:
-    pass
-
-async def execute_plan(plan: Plan, usage: RunUsage) -> Plan:
-    pass
+MAX_ATTEMPTS = 3                # max attempts to satisfy a task
 
 
 # ----------------------------------------- helpers
@@ -236,8 +206,8 @@ async def run_task(task: str, warm: bool = False, feedback: bool = False) -> Tas
     rec = TaskRecord(task=task,
                      warm=warm,
                      feedback=feedback,
-                     planner_model="stub",
-                     executor_model="stub",
+                     planner_model=planner_model,
+                     executor_model=executor_model,
                      max_attempts=MAX_ATTEMPTS)
     previous = None                 # C3b
     trace: list[Failure] = []       # C3c
