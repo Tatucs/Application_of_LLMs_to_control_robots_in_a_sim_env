@@ -24,11 +24,14 @@ logfire.configure(send_to_logfire='if-token-present')
 logfire.instrument_pydantic_ai()
 
 
-executor_model='openai-chat:Qwen/Qwen3.8-27B-NVFP4'
+# executor_model='openai-chat:Qwen/Qwen3.8-27B-NVFP4'
+executor_model='google:gemini-3.5-flash-lite'
 planner_model='google:gemini-3.5-flash-lite'
 
 # Wrap the transport in an MCPToolset
-toolset = MCPToolset(transport)
+# max_retries: a tool call with bad arguments (e.g. an invented one) goes back to the
+# model up to 3 times before the run raises; the default 1 ended a whole executor run
+toolset = MCPToolset(transport, max_retries=3)
 
 rate_limiter = AsyncLimiter(max_rate=1, time_period=5)
 PLANNER_LIMITS = UsageLimits(request_limit=15)
@@ -53,6 +56,9 @@ class Step(BaseModel):
     z: float | None = Field(default=None,description="If the called tool requires a position, specify its z coordinate here")
     yaw: float = 0.0
     note: str = Field(default="", description="It the planner wants to communicate something important about this step it can do it here.")
+    # C3b: written by the executor, "done" or "failed"; None = not reached.
+    # Free str, not Literal: any other value is kept and logged as a finding.
+    status: str | None = None
 
 class Plan(BaseModel):
     """The structured output of the planner agent, and the input of the executor agent."""
@@ -65,6 +71,12 @@ planner_agent = Agent(
     system_prompt=(
         "You are the planner part of a planner-executor agent to agent ecosystem. You two controll a Franka Emika Panda robot arm in Webots. You have no manipulation tools. You are responsible for generating a global plan to pick and place objects according to the instructions. Call get_objects (needs no arguments) and get_area_position only once. Call  get_target_position once for each object you need to move to gather information. Every pick and place step must set object_id, and every place step must set target_area."
         "The plan should be a detailed step by step list of tool calls with exact, correct arguments. The plan can only incorporate tools: 'pick(x: float, y: float, z: float, yaw: float = 0.0)', 'place(x: float, y: float, z: float, yaw: float = 0.0)', and 'go_home'. The plan must be clear and unambigous, because the executor agent will not be able to ask questions, this is an open loop implementation."
+        # C3a
+        " If the task is already satisfied in the current scene, return an empty plan; do not move objects that are already where the task wants them."
+        # C3b
+        " If you get a previous plan, steps marked `done` were executed; do not repeat them. Revise from the failed step on."
+        # C3c
+        " If you get a list of failures, each one is a pick or place that failed, with the tool's reason. Use the reasons when you revise the plan."
     ),
     toolsets=[planner_toolset],
     output_type=Plan,
@@ -72,10 +84,19 @@ planner_agent = Agent(
     model_settings= {'temperature' : 0.2,  'timeout':180, 'seed':42}
 )
 # Create plan
-async def make_plan(task: str, usage:RunUsage) ->Plan:
+async def make_plan(task: str, usage: RunUsage, previous: Plan | None = None,
+                    trace: list[BaseModel] | None = None) -> Plan:
+    # C2/C3a: message is the task only. C3b adds the previous marked plan,
+    # C3c the failures so far (trace items are c3_agents.Failure).
+    # No message_history: every planner run is fresh.
+    message = task
+    if previous is not None:
+        message += f"\n\nPrevious plan with execution status:\n{previous.model_dump_json(indent=2)}"
+    if trace:
+        message += "\n\nFailures so far:\n" + "\n".join(f.model_dump_json() for f in trace)
     # The planner_agent evaluates the prompt, calls MCP tools as needed, and returns the result
     planner_result = await planner_agent.run(
-        task,
+        message,
         usage_limits=PLANNER_LIMITS,
         )
     usage.incr(planner_result.usage)
@@ -89,13 +110,18 @@ executor_agent = Agent(
         "You are the executor part of a planner-executor agent to agent ecosystem. You two controll a Franka Emika Panda robot arm in Webots."
         "Your goal is to pick and place objects according to the instructions. Use the provided tools to execute the steps, the plan contains. "
         "This is an open loop implementation.You don't ask questions, you just execute the plan provided by the planner agent. If you encounter an error stop and report the error."
+        # C3a
+        " If the plan does not end with `go_home`, call it when you have finished or stopped on an error."
+        # C3b
+        " After each executed step, set its `status` in the plan to `done` or `failed`. Write only `done` or `failed`, nothing else. Return the plan."
     ),
     toolsets=[executor_toolset],
-    model_settings= {'temperature' : 0, 'timeout':60,'max_tokens':512, 'seed':42}
+    output_type=Plan,   # C3b: the marked plan comes back
+    model_settings= {'temperature' : 0, 'timeout':60,'max_tokens':2048, 'seed':42}
 )
 
 # Execute the plan
-async def execute_plan(plan: Plan, usage: RunUsage) -> str:
+async def execute_plan(plan: Plan, usage: RunUsage) -> Plan:
     # The executor_agent evaluates the plan, calls MCP tools as needed, and returns the result
     executor_result = await executor_agent.run(
                     plan.model_dump_json(indent=2),
@@ -109,15 +135,14 @@ async def main():
     print("--- Panda Robot Webots Terminal CLI ---")
     print("Type 'exit' or 'quit' to end.\n")
 
-    # Separate usage for both agents
-    planner_usage=RunUsage()
-    executor_usage=RunUsage()
-
     while True:
         user_input = input("Operator > ").strip()
         if not user_input or user_input.lower() in ["exit", "quit"]:
             break
-        # Create a plan    
+        # Separate usage for both agents, fresh for each task
+        planner_usage=RunUsage()
+        executor_usage=RunUsage()
+        # Create a plan
         plan= await make_plan(task=user_input, usage=planner_usage)
         # Execute the plan
         await execute_plan(plan=plan, usage=executor_usage)

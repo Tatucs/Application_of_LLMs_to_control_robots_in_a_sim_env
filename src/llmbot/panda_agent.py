@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 import logfire
 from aiolimiter import AsyncLimiter
-from pydantic_ai import Agent, ModelMessage, RunUsage,UsageLimits
+from pydantic_ai import Agent, ModelMessage, UsageLimits
 from pydantic_ai.mcp import MCPToolset
 from fastmcp.client.transports import StdioTransport
 from dotenv import load_dotenv
@@ -27,7 +27,6 @@ toolset = MCPToolset(transport)
 
 # Leaky bucket: at most 1 + 60/5 = 13 requests in any 60 s window (Gemini free tier: 15)
 rate_limiter = AsyncLimiter(max_rate=1, time_period=5)
-usage: RunUsage=RunUsage()
 # Initialize the Gemini model via PydanticAI
 agent = Agent(
     model=RateLimitedModel(model, rate_limiter),
@@ -59,7 +58,6 @@ async def main():
         # The agent evaluates the prompt, calls MCP tools as needed, and returns the result
         result = await agent.run(
             user_input,
-            usage=usage,
             usage_limits=UsageLimits(request_limit=50)
             )
         print(f"\nRobot > {result.output}\n")

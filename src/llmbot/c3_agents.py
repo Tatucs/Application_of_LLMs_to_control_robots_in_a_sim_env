@@ -1,0 +1,298 @@
+'''
+C3 closed-loop agents: C2 (planner + executor) plus a scene check and replanning.
+One loop, run_task(task, warm, feedback), covers all three:
+
+- C3a (warm=False): after each execution, check_scene compares the scene with the
+  plan through the MCP perception tools; on a mismatch the planner starts from scratch.
+- C3b (warm=True): warm start; the previous plan, with the executor's done/failed
+  marks, goes back to the planner.
+- C3c (warm=True, feedback=True): C3b plus a trace of all failed pick/place calls
+  so far (tool's reason and detail), read from the executor's messages.
+
+Measured in every configuration: fidelity (executor's calls vs plan), failures,
+and for C3b/C3c the status agreement (executor's marks vs real tool results).
+
+Run (from the repository root, sim running): python -m llmbot.c3_agents
+'''
+
+import asyncio
+import time
+
+from pydantic import BaseModel
+from pydantic_ai import RunUsage, capture_run_messages
+from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart, ToolReturnPart
+
+# C2: planner, executor and the MCP toolset (shared by both agents and the check)
+from llmbot.planner_executor import (
+    Plan,
+    execute_plan,
+    executor_model,
+    make_plan,
+    planner_model,
+    toolset,
+)
+
+# Constants
+TOL = 0.02                      # m; max x/y distance of a cube from its place target
+MAX_ATTEMPTS = 3                # max attempts to satisfy a task
+
+
+# ----------------------------------------- helpers
+
+# C3b + C3c: shared by status_agreement and failures
+def executed_calls(messages: list[ModelMessage]) -> list[tuple[ToolCallPart, dict | None]]:
+    """Executed tool calls in order, each with its result dict (None if no result came back)."""
+    calls = []          # executed ToolCallParts, in order
+    results = {}        # tool_call_id -> result dict
+    for m in messages:
+        for p in m.parts:
+            if isinstance(p, ToolCallPart) and p.tool_name != "final_result":
+                calls.append(p)
+            elif isinstance(p, ToolReturnPart) and isinstance(p.content, dict):
+                results[p.tool_call_id] = p.content
+    return [(c, results.get(c.tool_call_id)) for c in calls]
+
+
+# ----------------------------------------- scene check [C3a, used by all C3]
+
+class CheckResult(BaseModel):
+    ok: bool
+    mismatches: list[str]              # e.g. "obj_412: 0.031 m from place target"
+    error: str | None = None           # scene not visible (e.g. sim paused); stops the loop
+
+async def check_scene(plan: Plan, attempt: int) -> CheckResult:
+    """Check if every placed cube is at its place coordinates."""
+    places = [s for s in plan.steps if s.tool == "place"]
+
+    # No place steps: nothing was done on attempt 1;
+    # after attempt 1 an empty plan means the task is already satisfied.
+    if not places:
+        if attempt == 1:
+            return CheckResult(ok=False, mismatches=["no_place_steps"])
+        return CheckResult(ok=True, mismatches=[])
+
+    mismatches = []
+    for s in places:
+        if s.object_id is None or s.x is None or s.y is None:
+            mismatches.append(f"step {s.step}: place step without object_id or x/y")
+            continue
+
+        r = await toolset.direct_call_tool("get_target_position", {"object_id": s.object_id})
+
+        if r["reason"] == "not_found":
+            mismatches.append(f"{s.object_id}: not found")
+            continue
+        if not r["ok"]:
+            # timeout or error: the scene could not be seen, so no verdict
+            return CheckResult(ok=False, mismatches=mismatches,
+                               error=f"{s.object_id}: {r['reason']} ({r.get('detail', '')})")
+
+        dx = r["x"] - s.x
+        dy = r["y"] - s.y
+        if abs(dx) > TOL or abs(dy) > TOL:
+            dist = (dx**2 + dy**2) ** 0.5
+            mismatches.append(f"{s.object_id}: {dist:.3f} m from place target")
+
+    return CheckResult(ok=not mismatches, mismatches=mismatches)
+
+# ----------------------------------------- executor fidelity [C3a]
+
+class FidelityResult(BaseModel):
+    ok: bool
+    first_mismatch: int | None = None  # 1-based position where execution left the plan
+
+def fidelity(plan: Plan, messages: list[ModelMessage]) -> FidelityResult:
+    """Did the executor call exactly the planned tools, in order?"""
+    planned = [(s.tool, s.x, s.y, s.z, s.yaw) for s in plan.steps]
+
+    executed = []
+    for m in messages:
+        if isinstance(m, ModelResponse):
+            for p in m.parts:
+                if isinstance(p, ToolCallPart) and p.tool_name != "final_result":
+                    a = p.args_as_dict()   # args may arrive as dict or JSON string
+                    executed.append((p.tool_name, a.get("x"), a.get("y"), a.get("z"),
+                                     a.get("yaw", 0.0)))
+
+    # The final go_home comes from the executor prompt, not from the plan
+    if executed and executed[-1][0] == "go_home" and len(executed) > len(planned):
+        executed.pop()
+
+    for i, (p, e) in enumerate(zip(planned, executed, strict=False), start=1):
+        if p != e:
+            return FidelityResult(ok=False, first_mismatch=i)
+    if len(planned) != len(executed):
+        # one list is a prefix of the other: first missing or extra call
+        return FidelityResult(ok=False, first_mismatch=min(len(planned), len(executed)) + 1)
+    return FidelityResult(ok=True)
+
+
+# ----------------------------------------- status agreement [C3b]
+
+class AgreementResult(BaseModel):
+    ok: bool
+    disagreements: list[int] = []         # step numbers where mark != real result
+
+def status_agreement(marked: Plan, messages: list[ModelMessage]) -> AgreementResult:
+    """Does each done/failed mark match the ok field the tool really returned?"""
+    disagreements = []
+    for s, (c, r) in zip(marked.steps, executed_calls(messages), strict=False):
+        if s.tool != c.tool_name or s.tool not in ("pick", "place"):
+            continue
+        ok = r.get("ok") if r else None
+        if (s.status == "done" and ok is False) or (s.status == "failed" and ok is True):
+            disagreements.append(s.step)
+    return AgreementResult(ok=not disagreements, disagreements=disagreements)
+
+
+# ----------------------------------------- failure feedback [C3c; measured in all C3]
+
+class Failure(BaseModel):
+    attempt: int
+    step: int
+    tool: str                  # "pick" or "place"
+    object_id: str | None      # from the plan step; pick/place take no id
+    reason: str
+    detail: str = ""
+
+def failures(plan: Plan, messages: list[ModelMessage], attempt: int) -> list[Failure]:
+    """One Failure per pick/place whose tool result had ok: false."""
+    out = []
+    for s, (c, r) in zip(plan.steps, executed_calls(messages), strict=False):
+        if s.tool != c.tool_name or s.tool not in ("pick", "place"):
+            continue                      # off-plan call: fidelity reports it
+        if r is None or r.get("ok") is not False:
+            continue                      # no result (executor raised mid-call) or success
+        out.append(Failure(attempt=attempt, step=s.step, tool=s.tool,
+                           object_id=s.object_id,   # from the plan; the call has only x/y/z
+                           reason=r.get("reason", "unknown"),
+                           detail=r.get("detail", "")))
+    return out
+
+
+# ----------------------------------------- records
+
+class AttemptRecord(BaseModel):
+    attempt: int                           # 1-based
+    plan: Plan | None = None               # None if make_plan raised
+    plan_error: str | None = None
+    report: Plan | None = None             # marked plan from the executor; None if it raised
+    exec_error: str | None = None
+    check: CheckResult | None = None       # None if make_plan raised (no check, §3.2)
+    fidelity: FidelityResult | None = None
+    wall_time: float = 0.0                 # s, perf_counter
+    bad_statuses: list[str] = []           # C3b: status values other than done / failed / None
+    agreement: AgreementResult | None = None   # C3b
+    failures: list[Failure] = []           # C3c: failures of the executor's tool calls
+
+
+class TaskRecord(BaseModel):
+    task: str
+    warm: bool                              # C3b
+    feedback: bool                          # C3c
+    planner_model: str
+    executor_model: str
+    max_attempts: int
+    attempts: list[AttemptRecord] = []
+    success: bool = False
+    planner_usage: RunUsage = RunUsage()
+    executor_usage: RunUsage = RunUsage()
+
+# ----------------------------------------- loop
+
+async def run_task(task: str, warm: bool = False, feedback: bool = False) -> TaskRecord:
+    """C3 loop: plan, execute, check; replan until ok, check error, or MAX_ATTEMPTS."""
+    rec = TaskRecord(task=task,
+                     warm=warm,
+                     feedback=feedback,
+                     planner_model=planner_model,
+                     executor_model=executor_model,
+                     max_attempts=MAX_ATTEMPTS)
+    previous = None                 # C3b
+    trace: list[Failure] = []       # C3c
+
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        a = AttemptRecord(attempt=attempt)
+        rec.attempts.append(a)
+        t0 = time.perf_counter()
+
+        # plan; a raise = failed attempt, no check
+        # previous is None in C3a, trace is None in C3a/C3b
+        try:
+            a.plan = await make_plan(task, rec.planner_usage, previous,
+                                     trace if feedback else None)
+        except Exception as e:
+            a.plan_error = f"{type(e).__name__}: {e}"
+            a.wall_time = time.perf_counter() - t0
+            continue
+
+        # execute; a raise = failed attempt, but still check
+        # empty plan: nothing to execute (planner says the task is already satisfied)
+        msgs: list[ModelMessage] = []
+        if a.plan.steps:
+            with capture_run_messages() as msgs:
+                try:
+                    a.report = await execute_plan(a.plan, rec.executor_usage)
+                except Exception as e:
+                    a.exec_error = f"{type(e).__name__}: {e}"
+
+        a.fidelity = fidelity(a.plan, msgs)
+        a.failures = failures(a.plan, msgs, attempt)
+        a.check = await check_scene(a.plan, attempt)
+        a.wall_time = time.perf_counter() - t0
+        if a.report:
+            a.bad_statuses = [s.status for s in a.report.steps
+                              if s.status not in ("done", "failed", None)]
+            a.agreement = status_agreement(a.report, msgs)
+
+        if a.check.error:        # scene not visible: stop, run discarded
+            break
+        if a.check.ok:
+            rec.success = True
+            break
+
+        # C3b: send back the plan with only the executor's marks copied onto it
+        if warm:
+            previous = a.plan.model_copy(deep=True)
+            marks = {s.step: s.status for s in a.report.steps} if a.report else {}
+            for s in previous.steps:
+                s.status = marks.get(s.step)
+
+        # C3c: all failures of this task so far, from all attempts
+        if feedback:
+            trace.extend(a.failures)
+
+    return rec
+
+# ----------------------------------------- main
+
+# variant -> (warm, feedback) for run_task
+VARIANTS = {
+    "a": (False, False),    # C3a: replan from scratch
+    "b": (True, False),     # C3b: warm start
+    "c": (True, True),      # C3c: warm start + failure feedback
+}
+
+async def main():
+    """Terminal CLI: choose C3a/b/c once, then run tasks (reset the world before each)."""
+    print("--- Panda C3 closed-loop agent ---")
+    variant = ""
+    while variant not in VARIANTS:
+        variant = input("Variant (a / b / c) > ").strip().lower()
+    warm, feedback = VARIANTS[variant]
+    print(f"C3{variant}: warm={warm}, feedback={feedback}")
+    print("Type 'exit' or 'quit' to end.\n")
+
+    # one MCP session for the planner, the executor and check_scene
+    async with toolset:
+        while True:
+            task = input("Operator > ").strip()
+            if not task or task.lower() in ["exit", "quit"]:
+                break
+            rec = await run_task(task, warm=warm, feedback=feedback)
+            print(rec.model_dump_json(indent=2))
+            print(f"success: {rec.success} after {len(rec.attempts)} attempt(s)")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
