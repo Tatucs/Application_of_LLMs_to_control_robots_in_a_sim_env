@@ -24,7 +24,8 @@ logfire.configure(send_to_logfire='if-token-present')
 logfire.instrument_pydantic_ai()
 
 
-executor_model='openai-chat:Qwen/Qwen3.8-27B-NVFP4'
+# executor_model='openai-chat:Qwen/Qwen3.8-27B-NVFP4'
+executor_model='google:gemini-3.5-flash-lite'
 planner_model='google:gemini-3.5-flash-lite'
 
 # Wrap the transport in an MCPToolset
