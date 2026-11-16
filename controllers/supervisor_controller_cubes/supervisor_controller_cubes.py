@@ -5,6 +5,7 @@ Supervisor, which spawns 5 different coloured cubes of size 0.04 randomly within
 '''
 # Imports
 import numpy as np
+import math
 from controller import Supervisor
 
 # =============================== PARAMETERS ==============================
@@ -12,6 +13,7 @@ SEED = 42
 N_CUBES = 5
 MAX_ROUNDS = 1                    # total cube sets 
 ROUND_TIMEOUT = 300.0             # [s] sim time before a round is declared failed
+MIN_CUBE_SPACING=0.06
 # cube
 COLORS = [[0,0, 0.498039],[0.666667, 0, 0],[0, 0.333333, 0],[1, 0.333333, 1],[1, 1, 0]]     # Blue, Red, Green, Pink, Yellow
 CUBE_Z = 0.03                    # spawn height of the cube centre (greater than CUBE_SIZE/2 to avoid collision with the floor)
@@ -52,19 +54,23 @@ def in_basket_xy(p_world, margin=0.02):
     return abs(q[0]) <= basket_sx / 2 - margin and abs(q[1]) <= basket_sy / 2 - margin
 
 # Spawn cubes
-def sample_position():
+def sample_position(taken):
     """Samples a random position for a cube within the spawn area, ensuring it is not too close to the basket."""
     for _ in range(100):  # Try up to 100 times to find a valid position
         x = rng.uniform(*SPAWN_X_RANGE)
         y = rng.uniform(*SPAWN_Y_RANGE)
         p = (x, y, CUBE_Z)
+        if math.hypot(x,y)>0.8:
+            continue
+        if any(math.hypot(p[0] - q[0], p[1] - q[1]) < MIN_CUBE_SPACING for q in taken):
+            continue
         return p
     raise RuntimeError("Could not find a valid spawn position")
 
 def spawn_cubes():
     positions, nodes = [], []
     for i in range(N_CUBES):
-        p = sample_position()
+        p = sample_position(positions)
         positions.append(p)
         c = COLORS[i % len(COLORS)]
         node_str = (
@@ -102,6 +108,7 @@ try:
         nodes, positions = spawn_cubes()
         placed = [0.0] * N_CUBES
         result = None
+        round_start=supervisor.getTime()
         while result is None:
             step()
             # Check if all cubes are in the basket
@@ -115,6 +122,9 @@ try:
             if all(placed):
                 result = ("success", "all cubes in basket")
                 print(f"Round {r+1}: All cubes are in the basket.")
+                break
+            if supervisor.getTime() - round_start > ROUND_TIMEOUT:
+                result=("timeout", "round timed out")
                 break
         clear_cubes(nodes)
 except SimEnded:
