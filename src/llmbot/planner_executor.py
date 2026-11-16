@@ -28,7 +28,9 @@ executor_model='openai-chat:Qwen/Qwen3.8-27B-NVFP4'
 planner_model='google:gemini-3.5-flash-lite'
 
 # Wrap the transport in an MCPToolset
-toolset = MCPToolset(transport)
+# max_retries: a tool call with bad arguments (e.g. an invented one) goes back to the
+# model up to 3 times before the run raises; the default 1 ended a whole executor run
+toolset = MCPToolset(transport, max_retries=3)
 
 rate_limiter = AsyncLimiter(max_rate=1, time_period=5)
 PLANNER_LIMITS = UsageLimits(request_limit=15)
